@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+.claude/
+
+# Licensed software - not redistributable
+msparser/
+Documentation/
+mascot server scripts/
