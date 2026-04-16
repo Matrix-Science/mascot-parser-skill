@@ -1,36 +1,41 @@
-# Local Mascot Server Configuration
+# Mascot Server Configuration
 
 ## Directory Layout
 
+Mascot Server can be installed on Windows or Linux. The directory structure is the same; only the root path differs.
+
+| Resource | Windows (typical) | Linux (typical) |
+|----------|-------------------|-----------------|
+| Mascot root (`<MASCOT_HOME>`) | `C:\inetpub\mascot\` | `/usr/local/mascot/` |
+| CGI URL | `http://<HOST>/mascot/cgi/` | `http://<HOST>/mascot/cgi/` |
+
 ```
-C:\inetpub\mascot\
-├── bin\           # Mascot executables and tools
-├── cgi\           # CGI scripts (nph-mascot.exe, master_results_2.pl, login.pl, etc.)
-├── config\        # Configuration files (mascot.dat and versioned backups)
-├── data\          # Result files (.dat, .msr) and date subdirectories
-├── logs\          # Log files
-├── sequence\      # FASTA sequence databases
-└── x-cgi\         # Additional CGI scripts
+<MASCOT_HOME>/
+├── bin/           # Mascot executables and tools
+├── cgi/           # CGI scripts (nph-mascot.exe, master_results_2.pl, login.pl, etc.)
+├── config/        # Configuration files (mascot.dat and versioned backups)
+├── data/          # Result files (.dat, .msr) and date subdirectories
+├── logs/          # Log files
+├── sequence/      # FASTA sequence databases
+└── x-cgi/         # Additional CGI scripts
 ```
 
 ## Key Paths
 
 | Resource | Path |
 |----------|------|
-| Mascot root | `C:\inetpub\mascot\` |
-| CGI URL | `http://localhost/mascot/cgi/` |
-| mascot.dat (current) | `C:\inetpub\mascot\config\mascot.dat` |
-| Result files | `C:\inetpub\mascot\data\` |
-| Sequence databases | `C:\inetpub\mascot\sequence\` |
-| msparser SDK | `C:\Users\richardj\Qsync\dev\Matrix Science\Mascot Parser Skill\msparser\python36_and_later` |
-| Example scripts | `C:\Users\richardj\Qsync\dev\Matrix Science\Mascot Parser Skill\msparser\example_python\` |
+| mascot.dat (current) | `<MASCOT_HOME>/config/mascot.dat` |
+| Result files | `<MASCOT_HOME>/data/` |
+| Sequence databases | `<MASCOT_HOME>/sequence/` |
+| msparser SDK | `<MSPARSER_SDK>/` (separate from Mascot Server) |
+| Example scripts | `<MSPARSER_SDK>/example_python/`, `example_perl/`, etc. |
 
 ## Result File Organization
 
-Result files live directly in `C:\inetpub\mascot\data\`:
+Result files live in `<MASCOT_HOME>/data/`:
 - `.dat` files: text-based result format (e.g. `F001316.dat`, `F981139.dat`)
 - `.msr` files: binary result format (e.g. `F981142.msr`, `F981143.msr`)
-- Named result files (e.g. `benchmark_PXD003791.dat`, `borowik_omrf.dat`)
+- Named result files (e.g. `benchmark_PXD003791.dat`)
 
 Date subdirectories (e.g. `20240104/`, `20240306/`) contain `task_id` files tracking search provenance.
 
@@ -42,7 +47,7 @@ Special files in data directory:
 ## Discovering Available Databases
 
 ```python
-datfile = msparser.ms_datfile(r"C:\inetpub\mascot\config\mascot.dat")
+datfile = msparser.ms_datfile("<MASCOT_HOME>/config/mascot.dat")
 dbs = datfile.getDatabases()
 for i in range(dbs.getNumberOfDatabases()):
     db = dbs.getDatabase(i)
@@ -50,10 +55,7 @@ for i in range(dbs.getNumberOfDatabases()):
         print(db.getName())
 ```
 
-Or check the filesystem:
-```
-C:\inetpub\mascot\sequence\  # each subdirectory is a database
-```
+Or check the filesystem: each subdirectory under `<MASCOT_HOME>/sequence/` is a database.
 
 ## mascot.dat Configuration
 
@@ -71,22 +73,18 @@ Key sections accessible via `ms_datfile`:
 
 ## Authentication Flow
 
-Mascot Security is enabled on this server (network user count of 1, security is for testing purposes only).
+**Credentials** should be stored in environment variables or a `.env` file. Never hardcode passwords in scripts.
 
-**Credentials** are stored in `.env` at the project root. Never hardcode passwords in scripts.
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `MASCOT_URL` | `http://localhost/mascot/cgi/` | Server CGI URL |
-| `MASCOT_USER` | `richard` | Default user |
-| `MASCOT_PASS` | (in .env) | Default user password |
-| `MASCOT_ADMIN_USER` | `admin` | Admin user |
-| `MASCOT_ADMIN_PASS` | (in .env) | Admin password |
+| Variable | Purpose |
+|----------|---------|
+| `MASCOT_URL` | Server CGI URL (e.g. `http://localhost/mascot/cgi/`) |
+| `MASCOT_USER` | Username |
+| `MASCOT_PASS` | Password |
 
 ### Direct File Access (No Auth Needed)
 Opening local `.dat`/`.msr` files with `createResfile()` does not require authentication:
 ```python
-resfile = msparser.ms_mascotresfilebase.createResfile(r"C:\inetpub\mascot\data\F001316.dat")
+resfile = msparser.ms_mascotresfilebase.createResfile("<MASCOT_HOME>/data/F001316.dat")
 ```
 
 ### HTTP Access (Auth Required)
@@ -95,7 +93,7 @@ For remote operations (search submission, downloading results, getting sequences
 ```python
 from dotenv import load_dotenv
 import os
-load_dotenv(r"C:\Users\richardj\Qsync\dev\Matrix Science\Mascot Parser Skill\.env")
+load_dotenv()
 
 settings = msparser.ms_connection_settings()
 settings.setProxyServerType(msparser.ms_connection_settings.PROXY_TYPE_NO_PROXY)
@@ -126,10 +124,10 @@ datfile = msparser.ms_datfile(os.getenv("MASCOT_URL"), 0, cs)
 
 ## CGI Scripts
 
-Key CGI endpoints at `http://localhost/mascot/cgi/`:
+Key CGI endpoints at `http://<HOST>/mascot/cgi/`:
 - `nph-mascot.exe` - search engine
 - `master_results_2.pl` - results viewer (e.g. `master_results_2.pl?file=../data/F001316.dat`)
 - `login.pl` - authentication
-- `export_dat_2.pl` - export results
+- `export_dat_2.pl` / `export_dat_v3.pl` - export results
 - `get_params.pl` - get search parameters
 - `getseq.pl` - sequence retrieval

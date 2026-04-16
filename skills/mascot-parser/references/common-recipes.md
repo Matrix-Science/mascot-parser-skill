@@ -1,10 +1,10 @@
 # msparser Common Recipes
 
-Ready-to-use code patterns. All recipes assume the standard preamble:
+Ready-to-use code patterns. All recipes assume msparser is imported and available.
 
 ```python
 import sys
-sys.path.insert(0, r"C:\Users\richardj\Qsync\dev\Matrix Science\Mascot Parser Skill\msparser\python36_and_later")
+sys.path.insert(0, "<MSPARSER_SDK>/python36_and_later")
 import msparser
 ```
 
@@ -34,6 +34,7 @@ def get_result_info(filepath):
         "is_pmf": resfile.anyPMF(),
         "is_sq": resfile.anySQ(),
         "has_matches": resfile.anyFastaMatches(),
+        "is_decoy": resfile.params().getDECOY() > 0,
     }
     return info
 ```
@@ -62,37 +63,60 @@ def get_search_params(resfile):
         "taxonomy": p.getTAXONOMY(),
         "username": p.getUSERNAME(),
         "filename": p.getFILENAME(),
+        "decoy": p.getDECOY() > 0,
     }
     return params
 ```
 
 ---
 
-## 3. Get Protein Hits with Scores
+## 3. Create a Summary (Standard Pattern)
+
+Uses the recommended two-argument constructor with `ms_mascotresults_params`.
 
 ```python
-def get_protein_hits(resfile, max_hits=50):
-    """Get top protein hits with accession, description, score, mass, coverage."""
-    datfile = msparser.ms_datfile(r"C:\inetpub\mascot\config\mascot.dat")
-    mascotOptions = datfile.getMascotOptions() if datfile.isValid() else msparser.ms_mascotoptions()
+def create_summary(resfile, mascot_dat_path=None, target_fdr=None):
+    """Create a peptide or protein summary using the recommended two-argument constructor.
 
-    (scriptName, flags, minProb, maxHits, ignoreBelow,
-     minPepLen, usePepSummary, flags2) = resfile.get_ms_mascotresults_params(mascotOptions)
+    Args:
+        resfile: ms_mascotresfilebase object
+        mascot_dat_path: path to mascot.dat (optional, uses defaults if unavailable)
+        target_fdr: target FDR as a decimal (e.g. 0.01 for 1%), or None
+    """
+    mascotOptions = msparser.ms_mascotoptions()
+    if mascot_dat_path:
+        datfile = msparser.ms_datfile(mascot_dat_path)
+        if datfile.isValid():
+            mascotOptions = datfile.getMascotOptions()
 
-    if max_hits:
-        maxHits = max_hits
+    resParams = msparser.ms_mascotresults_params()
+    resfile.get_ms_mascotresults_params(mascotOptions, resParams)
 
-    if usePepSummary:
-        results = msparser.ms_peptidesummary(
-            resfile, flags, minProb, maxHits, "", ignoreBelow, minPepLen, "", flags2
-        )
+    if target_fdr is not None and resfile.params().getDECOY() > 0:
+        resParams.setTargetFDR(target_fdr)
+        resParams.setTargetFDRType(msparser.ms_mascotresults.DS_COUNT_PSM)
+
+    if resParams.isUsePeptideSummary():
+        results = msparser.ms_peptidesummary(resfile, resParams)
     else:
-        results = msparser.ms_proteinsummary(resfile, flags, minProb, maxHits)
+        results = msparser.ms_proteinsummary(resfile, resParams)
+
+    return results
+```
+
+---
+
+## 4. Get Protein Hits with Scores
+
+```python
+def get_protein_hits(resfile, mascot_dat_path=None, max_hits=50):
+    """Get top protein hits with accession, description, score, mass, coverage."""
+    results = create_summary(resfile, mascot_dat_path)
 
     proteins = []
     hit = 1
     prot = results.getHit(hit)
-    while prot:
+    while prot and (max_hits == 0 or hit <= max_hits):
         acc = prot.getAccession()
         proteins.append({
             "hit": hit,
@@ -112,11 +136,11 @@ def get_protein_hits(resfile, max_hits=50):
 
 ---
 
-## 4. Get Peptide Matches for a Protein
+## 5. Get Peptide Matches for a Protein (with Significance)
 
 ```python
 def get_protein_peptides(prot, results):
-    """Get all peptide matches for a given protein hit."""
+    """Get all peptide matches for a given protein hit, with significance info."""
     peptides = []
     for i in range(1, 1 + prot.getNumPeptides()):
         query = prot.getPeptideQuery(i)
@@ -130,11 +154,17 @@ def get_protein_peptides(prot, results):
         if not pep or not pep.getAnyMatch():
             continue
 
+        score = pep.getIonsScore()
+        threshold = results.getPeptideThreshold(query, 20, rank)
+
         peptides.append({
             "query": query,
             "rank": rank,
             "sequence": pep.getPeptideStr(),
-            "score": pep.getIonsScore(),
+            "score": score,
+            "expect": pep.getExpectationValue(),
+            "threshold": threshold,
+            "significant": score >= threshold,
             "observed_mz": pep.getObserved(),
             "charge": pep.getCharge(),
             "mr_calc": pep.getMrCalc(),
@@ -152,14 +182,14 @@ def get_protein_peptides(prot, results):
 
 ---
 
-## 5. Export Results to CSV
+## 6. Export Results to CSV
 
 ```python
 import csv
 
-def export_proteins_csv(resfile, output_path):
+def export_proteins_csv(resfile, output_path, mascot_dat_path=None):
     """Export protein hits to CSV."""
-    proteins, results = get_protein_hits(resfile)
+    proteins, results = get_protein_hits(resfile, mascot_dat_path)
 
     with open(output_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
@@ -170,15 +200,15 @@ def export_proteins_csv(resfile, output_path):
         writer.writerows(proteins)
 
 
-def export_peptides_csv(resfile, output_path):
+def export_peptides_csv(resfile, output_path, mascot_dat_path=None):
     """Export all peptides from all protein hits to CSV."""
-    proteins, results = get_protein_hits(resfile)
+    results = create_summary(resfile, mascot_dat_path)
 
     with open(output_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "protein_accession", "query", "rank", "sequence", "score",
-            "observed_mz", "charge", "mr_calc", "delta",
-            "missed_cleavages", "readable_mods"
+            "expect", "significant", "observed_mz", "charge", "mr_calc",
+            "delta", "missed_cleavages", "readable_mods"
         ])
         writer.writeheader()
 
@@ -190,8 +220,9 @@ def export_peptides_csv(resfile, output_path):
             for pep in peptides:
                 row = {"protein_accession": acc}
                 row.update({k: pep[k] for k in [
-                    "query", "rank", "sequence", "score", "observed_mz",
-                    "charge", "mr_calc", "delta", "missed_cleavages", "readable_mods"
+                    "query", "rank", "sequence", "score", "expect",
+                    "significant", "observed_mz", "charge", "mr_calc",
+                    "delta", "missed_cleavages", "readable_mods"
                 ]})
                 writer.writerow(row)
             hit += 1
@@ -200,10 +231,10 @@ def export_peptides_csv(resfile, output_path):
 
 ---
 
-## 6. List Available Databases from mascot.dat
+## 7. List Available Databases from mascot.dat
 
 ```python
-def list_databases(mascot_dat_path=r"C:\inetpub\mascot\config\mascot.dat"):
+def list_databases(mascot_dat_path):
     """List all configured databases and their status."""
     datfile = msparser.ms_datfile(mascot_dat_path)
     if not datfile.isValid():
@@ -226,17 +257,17 @@ def list_databases(mascot_dat_path=r"C:\inetpub\mascot\config\mascot.dat"):
 
 ---
 
-## 7. Connect to Server and Authenticate
+## 8. Connect to Server and Authenticate
 
-Credentials are loaded from `.env` (see SKILL.md Setup section).
+Credentials should be loaded from `.env` or environment variables.
 
 ```python
 from dotenv import load_dotenv
 import os
-load_dotenv(r"C:\Users\richardj\Qsync\dev\Matrix Science\Mascot Parser Skill\.env")
+load_dotenv()
 
 def connect_to_mascot():
-    """Connect to Mascot Server and authenticate using .env credentials."""
+    """Connect to Mascot Server and authenticate."""
     url = os.getenv("MASCOT_URL", "http://localhost/mascot/cgi/")
     username = os.getenv("MASCOT_USER", "")
     password = os.getenv("MASCOT_PASS", "")
@@ -266,7 +297,7 @@ def connect_to_mascot():
 
 ---
 
-## 8. Submit a Search via HTTP
+## 9. Submit a Search via HTTP
 
 ```python
 import time
@@ -295,6 +326,7 @@ def submit_search(session, mgf_path, params=None):
         "FORMAT": "Mascot generic",
         "INSTRUMENT": "ESI-TRAP",
         "REPORT": "AUTO",
+        "DECOY": "1",
         "USERNAME": "Mascot Parser Script",
         "USEREMAIL": "",
     }
@@ -304,7 +336,6 @@ def submit_search(session, mgf_path, params=None):
     boundary = "---------FormBoundary4C9ByKKVofH"
     httpHeader = f"Content-Type: multipart/mixed; boundary={boundary}"
 
-    # Build MIME body
     parts = [f"FORMVER\n\n1.01"]
     for key, val in defaults.items():
         parts.append(f"{key}\n\n{val}")
@@ -334,7 +365,7 @@ def submit_search(session, mgf_path, params=None):
 
 ---
 
-## 9. Check Search Status and Download Results
+## 10. Check Search Status and Download Results
 
 ```python
 def wait_for_search(search, timeout=600):
@@ -368,8 +399,8 @@ def wait_for_search(search, timeout=600):
         print("Could not get results filename")
         return None
 
-    import ntpath
-    local_file = ntpath.basename(remote_file)
+    import os
+    local_file = os.path.basename(remote_file)
     progress = msparser.ms_http_helper_progress()
     if search.downloadResultsFile(local_file, progress):
         print(f"Downloaded to {local_file}")
@@ -381,21 +412,19 @@ def wait_for_search(search, timeout=600):
 
 ---
 
-## 10. Find Recent Result Files
+## 11. Find Recent Result Files
 
 ```python
 import os
 import glob
 
-def find_result_files(data_dir=r"C:\inetpub\mascot\data", extensions=(".dat", ".msr")):
+def find_result_files(data_dir, extensions=(".dat", ".msr")):
     """Find result files in the Mascot data directory, sorted by modification time."""
     files = []
     for ext in extensions:
         files.extend(glob.glob(os.path.join(data_dir, f"*{ext}")))
-        # Also check date subdirectories
         files.extend(glob.glob(os.path.join(data_dir, f"*/*{ext}")))
 
-    # Sort by modification time, newest first
     files.sort(key=os.path.getmtime, reverse=True)
 
     results = []
@@ -411,53 +440,89 @@ def find_result_files(data_dir=r"C:\inetpub\mascot\data", extensions=(".dat", ".
 
 ---
 
-## 11. Get FDR Statistics (Decoy Hits, Thresholds)
+## 12. FDR-Controlled Results with Significance
 
 ```python
-def get_fdr_stats(resfile, results):
-    """Get identity/homology thresholds and FDR info for each query."""
-    stats = []
-    for q in range(1, 1 + resfile.getNumQueries()):
-        pep = results.getPeptide(q, 1)
-        if not pep or not pep.getAnyMatch():
-            continue
+def get_significant_peptides(resfile, mascot_dat_path=None, target_fdr=0.01):
+    """Get all significant peptide matches at a given FDR threshold."""
+    results = create_summary(resfile, mascot_dat_path, target_fdr=target_fdr)
 
-        identity_thresh = results.getPeptideIdentityThreshold(q, 20)
-        homology_thresh = results.getHomologyThreshold(q, 20)
-        score = pep.getIonsScore()
-        prob = results.getProbOfPepBeingRandomMatch(score, q)
+    significant = []
+    hit = 1
+    prot = results.getHit(hit)
+    while prot:
+        acc = prot.getAccession()
+        for i in range(1, 1 + prot.getNumPeptides()):
+            query = prot.getPeptideQuery(i)
+            rank = prot.getPeptideP(i)
+            if query == -1 or rank == -1:
+                continue
+            if prot.getPeptideDuplicate(i) == msparser.ms_protein.DUPE_DuplicateSameQuery:
+                continue
 
-        stats.append({
-            "query": q,
-            "score": score,
-            "identity_threshold": identity_thresh,
-            "homology_threshold": homology_thresh,
-            "probability_random": prob,
-            "significant": score >= identity_thresh,
-        })
-    return stats
+            pep = results.getPeptide(query, rank)
+            if not pep or not pep.getAnyMatch():
+                continue
+
+            score = pep.getIonsScore()
+            threshold = results.getPeptideThreshold(query, 20, rank)
+
+            if score >= threshold:
+                significant.append({
+                    "protein": acc,
+                    "query": query,
+                    "rank": rank,
+                    "sequence": pep.getPeptideStr(),
+                    "score": score,
+                    "expect": pep.getExpectationValue(),
+                    "threshold": threshold,
+                })
+
+        hit += 1
+        prot = results.getHit(hit)
+
+    return significant
 ```
 
 ---
 
-## 12. Calculate Sequence Coverage
+## 13. Enable Percolator Rescoring
 
 ```python
-def calc_coverage_percentage(prot, results, resfile):
-    """Calculate sequence coverage as a percentage."""
-    # prot.getCoverage() returns number of residues matched
-    acc = prot.getAccession()
-    protein_mass = results.getProteinMass(acc)
-    residues_covered = prot.getCoverage()
-    # Approximate total residues from mass (average residue ~111.1 Da)
-    approx_total = int(protein_mass / 111.1) if protein_mass > 0 else 0
-    pct = (residues_covered / approx_total * 100) if approx_total > 0 else 0
-    return residues_covered, approx_total, pct
+def create_summary_with_percolator(resfile, mascot_dat_path=None, target_fdr=0.01):
+    """Create a summary with Percolator rescoring enabled (if available)."""
+    mascotOptions = msparser.ms_mascotoptions()
+    if mascot_dat_path:
+        datfile = msparser.ms_datfile(mascot_dat_path)
+        if datfile.isValid():
+            mascotOptions = datfile.getMascotOptions()
+
+    resParams = msparser.ms_mascotresults_params()
+    resfile.get_ms_mascotresults_params(mascotOptions, resParams)
+
+    # Check Percolator prerequisites
+    can_percolate = (
+        resfile.params().getDECOY() > 0
+        and resfile.anyMSMS()
+        and not resfile.isErrorTolerant()
+    )
+
+    if can_percolate:
+        flags2 = resParams.getFlags2()
+        flags2 |= msparser.ms_peptidesummary.MSPEPSUM_PERCOLATOR
+        resParams.setFlags2(flags2)
+
+    if target_fdr is not None and resfile.params().getDECOY() > 0:
+        resParams.setTargetFDR(target_fdr)
+        resParams.setTargetFDRType(msparser.ms_mascotresults.DS_COUNT_PSM)
+
+    results = msparser.ms_peptidesummary(resfile, resParams)
+    return results
 ```
 
 ---
 
-## 13. Get Unassigned Peptide List
+## 14. Get Unassigned Peptide List
 
 ```python
 def get_unassigned_peptides(results):
@@ -471,6 +536,7 @@ def get_unassigned_peptides(results):
                 "query": pep.getQuery(),
                 "sequence": pep.getPeptideStr(),
                 "score": pep.getIonsScore(),
+                "expect": pep.getExpectationValue(),
                 "observed_mz": pep.getObserved(),
                 "charge": pep.getCharge(),
                 "readable_mods": results.getReadableVarMods(pep.getQuery(), pep.getRank()),
@@ -480,7 +546,7 @@ def get_unassigned_peptides(results):
 
 ---
 
-## 14. Read Spectrum/Query Data from Result File
+## 15. Read Spectrum Data from Result File
 
 ```python
 def get_spectrum_data(resfile, query_number):
@@ -512,7 +578,6 @@ def export_mgf(resfile, output_path):
             inp = msparser.ms_inputquery(resfile, q)
 
             if inp.getNumberOfPeaks(1) == 0:
-                # PMF - just mass
                 f.write(f"{resfile.getObservedMass(q)}\n")
                 continue
 

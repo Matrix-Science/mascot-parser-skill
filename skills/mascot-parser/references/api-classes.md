@@ -42,11 +42,85 @@ resfile = msparser.ms_mascotresfilebase.createResfile(filename, keepAliveInterva
 
 **Parameters & Results:**
 - `params()` -> ms_searchparams
-- `get_ms_mascotresults_params(mascotOptions)` -> tuple of (scriptName, flags, minProbability, maxHitsToReport, ignoreIonsScoreBelow, minPepLenInPepSummary, usePeptideSummary, flags2)
+- `get_ms_mascotresults_params(mascotOptions, resParams)` -> str (scriptName). Populates the `resParams` object (ms_mascotresults_params) with defaults from the result file and mascot.dat options. **This is the recommended way to get default parameters.**
+- `get_ms_mascotresults_params(mascotOptions)` -> tuple of (scriptName, flags, minProbability, maxHitsToReport, ignoreIonsScoreBelow, minPepLenInPepSummary, usePeptideSummary, flags2). **Obsolete form — use the two-argument version above.**
 
 **Observed Data:**
 - `getObservedMass(query)` -> float (1-based query number)
 - `getObservedCharge(query)` -> int
+
+---
+
+## ms_mascotresults_params
+
+Parameters object for creating `ms_peptidesummary` or `ms_proteinsummary`. This is the recommended way to pass parameters using the two-argument constructor.
+
+### Constructors
+
+```python
+# Default constructor
+resParams = msparser.ms_mascotresults_params()
+
+# Constructor with explicit values
+resParams = msparser.ms_mascotresults_params(
+    flags,                    # uint (MSRES_* flags, default MSRES_GROUP_PROTEINS)
+    minProbability,           # float (default 0.05)
+    maxHitsToReport,          # int (default 0)
+    unigeneIndexFile,         # str (default "")
+    ignoreIonsScoreBelow,     # float (default 0.0)
+    minPepLenInPepSummary,    # int (default 0)
+    singleHit,                # str (default "")
+    flags2                    # uint (MSPEPSUM_* flags, default MSPEPSUM_NONE)
+)
+
+# Copy constructor
+resParams = msparser.ms_mascotresults_params(otherResParams)
+```
+
+### Populating from mascot.dat defaults
+
+```python
+datfile = msparser.ms_datfile("<MASCOT_HOME>/config/mascot.dat")
+mascotOptions = datfile.getMascotOptions() if datfile.isValid() else msparser.ms_mascotoptions()
+scriptName = resfile.get_ms_mascotresults_params(mascotOptions, resParams)
+# resParams is now populated with appropriate defaults
+```
+
+### Getter Methods
+
+- `getFlags()` -> uint — OR'd `ms_mascotresults.FLAGS` values
+- `getFlags2()` -> uint — OR'd `ms_peptidesummary.MSPEPSUM` values
+- `getMinProbability()` -> float — significance threshold (default 0.05)
+- `getMaxHitsToReport()` -> int
+- `getIgnoreIonsScoreBelow()` -> float — score cutoff (-1 means use minProbability)
+- `getMinPepLenInPeptideSummary()` -> int
+- `getMinNumSigUniqueSequences()` -> int — required significant unique sequences per protein (1-5)
+- `getUnigeneIndexFile()` -> str
+- `getSingleHit()` -> str
+- `getTargetFDR()` -> float — target FDR (0-1, where 0 means not set)
+- `getTargetFDRType()` -> int — `DS_COUNT_PSM` or `DS_COUNT_SEQUENCE`
+- `isUsePeptideSummary()` -> bool — hint whether peptide or protein summary should be created
+
+### Setter Methods
+
+- `setFlags(flags)` — set all flags at once
+- `setFlags2(flags2)` — set all pepsum flags at once
+- `setFlag(flag, enabled)` — toggle individual `ms_mascotresults.FLAGS` flag
+- `setFlag2(flag, enabled)` — toggle individual `ms_peptidesummary.MSPEPSUM` flag
+- `setMinProbability(minProbability)` — 0-1 is probability; >1 treated as absolute score
+- `setMaxHitsToReport(maxHitsToReport)`
+- `setIgnoreIonsScoreBelow(ignoreIonsScoreBelow)` — -1 means use minProbability; 0-1 is probability
+- `setMinPepLenInPeptideSummary(minPepLenInPeptideSummary)`
+- `setMinNumSigUniqueSequences(n)` — range 1-5, default 1
+- `setUnigeneIndexFile(unigeneIndexFile)`
+- `setSingleHit(singleHit)` — format: `"3:CH60_HUMAN"` (db index prefix)
+- `setTargetFDR(fdr)` — target FDR in range 0-1; **overrides minProbability** for target-decoy searches
+- `setTargetFDRType(fdrType)` — `DS_COUNT_PSM` (default) or `DS_COUNT_SEQUENCE`
+- `setUsePeptideSummary(usePeptideSummary)`
+
+### Utility Methods
+
+- `copyFrom(otherResParams)` — copy all settings from another params object
 
 ---
 
@@ -64,6 +138,7 @@ Search parameters from the result file. Obtained via `resfile.params()`.
 - `getFORMAT()` -> str (data format)
 - `getFORMVER()` -> str
 - `getINSTRUMENT()` -> str
+- `getDECOY()` -> int (>0 if decoy search enabled)
 
 **Tolerances:**
 - `getTOL()` -> float (peptide mass tolerance)
@@ -117,22 +192,28 @@ Search parameters from the result file. Obtained via `resfile.params()`.
 
 Peptide-level result summary for MS/MS searches. Inherits from ms_mascotresults.
 
+### Recommended constructor (two-argument)
+
 ```python
+results = msparser.ms_peptidesummary(resfile, resParams)
+```
+
+Where `resParams` is an `ms_mascotresults_params` object (see above).
+
+### Obsolete constructor (do not use in new code)
+
+```python
+# OBSOLETE — shown only for reference when reading old code
 results = msparser.ms_peptidesummary(
-    resfile,                  # ms_mascotresfilebase
-    flags,                    # int (MSRES_* flags OR'd together)
-    minProbability,           # float (e.g. 0.05)
-    maxHitsToReport,          # int
-    unigeneIndexFile,         # str (usually "")
-    ignoreIonsScoreBelow,     # float
-    minPepLenInPepSummary,    # int
-    unigeneIndexFile2,        # str (usually "")
-    flags2                    # int (MSPEPSUM_* flags)
+    resfile, flags, minProbability, maxHitsToReport,
+    unigeneIndexFile, ignoreIonsScoreBelow,
+    minPepLenInPepSummary, unigeneIndexFile2, flags2
 )
 ```
 
 **Protein Access (inherited from ms_mascotresults):**
 - `getHit(hitNumber)` -> ms_protein or None (1-based)
+- `getNumberOfHits()` -> int
 - `getProteinDescription(accession)` -> str
 - `getProteinMass(accession)` -> float
 - `getNextSimilarProteinOf(accession, dbIdx, i)` -> ms_protein or None (1-based i)
@@ -144,15 +225,16 @@ results = msparser.ms_peptidesummary(
 - `getReadableVarMods(query, rank)` -> str (human-readable modification string)
 - `getProteinsWithThisPepMatch(query, rank)` -> str
 
+**Significance & Thresholds:**
+- `getPeptideThreshold(query, sigLevel, rank)` -> float — effective significance threshold for this PSM
+- `getPeptideIdentityThreshold(query, sigLevel)` -> float — identity threshold
+- `getHomologyThreshold(query, sigLevel)` -> float — homology threshold
+- `getProbOfPepBeingRandomMatch(score, query)` -> float — probability of random match
+
 **Unassigned Peptides:**
 - `createUnassignedList(sortOrder)` - call first with `msparser.ms_mascotresults.SCORE`
 - `getNumberOfUnassigned()` -> int
 - `getUnassigned(index)` -> ms_peptide (1-based)
-
-**Thresholds:**
-- `getPeptideIdentityThreshold(query, sigLevel)` -> float
-- `getHomologyThreshold(query, sigLevel)` -> float
-- `getProbOfPepBeingRandomMatch(score, query)` -> float
 
 ---
 
@@ -160,13 +242,17 @@ results = msparser.ms_peptidesummary(
 
 Protein-level result summary for PMF searches. Inherits from ms_mascotresults.
 
+### Recommended constructor (two-argument)
+
 ```python
-results = msparser.ms_proteinsummary(
-    resfile,           # ms_mascotresfilebase
-    flags,             # int
-    minProbability,    # float
-    maxHitsToReport    # int
-)
+results = msparser.ms_proteinsummary(resfile, resParams)
+```
+
+### Obsolete constructor
+
+```python
+# OBSOLETE
+results = msparser.ms_proteinsummary(resfile, flags, minProbability, maxHitsToReport)
 ```
 
 Same protein/peptide access methods as ms_peptidesummary (inherited from ms_mascotresults).
@@ -192,6 +278,10 @@ Individual protein hit. Obtained from `results.getHit(n)`.
 - `getPeptideDuplicate(i)` -> int (check against `ms_protein.DUPE_DuplicateSameQuery`, `ms_protein.DUPE_Duplicate`)
 - `getPeptideIsBold(i)` -> bool
 - `getPeptideShowCheckbox(i)` -> bool
+- `getPeptideStart(i)` -> int (start position in protein)
+- `getPeptideEnd(i)` -> int (end position in protein)
+- `getPeptideResidueBefore(i)` -> str
+- `getPeptideResidueAfter(i)` -> str
 
 ---
 
@@ -204,8 +294,9 @@ Individual peptide match. Obtained from `results.getPeptide(query, rank)`.
 - `getRank()` -> int
 - `getPrettyRank()` -> int
 - `getPeptideStr()` -> str (amino acid sequence, e.g. "ALMLQGVDLLADAVAVTMGPK")
-- `getIonsScore()` -> float (same as `getScore()`)
-- `getScore()` -> float
+- `getIonsScore()` -> float (Mascot ions score)
+- `getScore()` -> float (same as getIonsScore)
+- `getExpectationValue()` -> float (E-value; significant if <= 0.05)
 - `getObserved()` -> float (observed m/z)
 - `getCharge()` -> int
 - `getMrCalc()` -> float (calculated Mr)
@@ -246,6 +337,10 @@ inp = msparser.ms_inputquery(resfile, queryNumber)  # 1-based
 - `getPepTol()` -> float
 - `getPepTolUnits()` -> str
 - `getPepTolString()` -> str
+- `getRetentionTimes()` -> str
+- `getScanNumbers()` -> str
+- `getRawfile()` -> str
+- `getIonMobility()` -> float
 
 ---
 
@@ -256,7 +351,6 @@ HTTP client for connecting to Mascot Server.
 ```python
 settings = msparser.ms_connection_settings()
 settings.setProxyServerType(msparser.ms_connection_settings.PROXY_TYPE_NO_PROXY)
-# or PROXY_TYPE_AUTO for auto-detection
 settings.setUserAgent("MyScript/1.0 " + settings.getUserAgent())
 
 client = msparser.ms_http_client(baseUrl, settings)
@@ -384,6 +478,8 @@ Mascot server options from mascot.dat.
 
 - `isSectionAvailable()` -> bool
 - `getMascotCmdLine()` -> str
+- `getPercolatorMinQueries()` -> int
+- `getPercolatorMinSequences()` -> int
 
 ---
 
@@ -416,14 +512,22 @@ frames = msparser.vectori()
 - `MSRES_MUDPIT_PROTEIN_SCORE` - MudPIT scoring
 
 ### Peptide Summary Flags (ms_peptidesummary)
+- `MSPEPSUM_NONE` - no flags
 - `MSPEPSUM_USE_HOMOLOGY_THRESH` - use homology threshold
+- `MSPEPSUM_PERCOLATOR` - enable Percolator rescoring
+- `MSPEPSUM_SINGLE_HIT_DBIDX` - singleHit uses db index prefix format
 
 ### Sort Orders (ms_mascotresults)
 - `SCORE` - sort by score
 
+### FDR Count Types (ms_mascotresults)
+- `DS_COUNT_PSM` - FDR at PSM level
+- `DS_COUNT_SEQUENCE` - FDR at unique sequence level
+
 ### Protein Duplicate Types (ms_protein)
 - `DUPE_DuplicateSameQuery` - same peptide from same query
 - `DUPE_Duplicate` - duplicate from different query
+- `DUPE_NotDuplicate` - not a duplicate
 
 ### Login Return Codes (ms_http_client)
 - `L_SUCCESS` - login successful
