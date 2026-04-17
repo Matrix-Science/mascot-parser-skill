@@ -10,8 +10,8 @@ Always-on reference for writing scripts that interact with Mascot Server using t
 **Language-specific references:**
 - **Python**: This file (below) — constructor syntax: `msparser.ClassName(args)`
 - **Perl**: [references/perl-api.md](references/perl-api.md) — constructor syntax: `msparser::ClassName->new($args)`, constants: `$msparser::ClassName::CONSTANT`
-- **Java**: `import matrix_science.msparser.*;` — constructor syntax: `new ClassName(args)`
-- **C#**: `using matrix_science.msparser;` — constructor syntax: `new ClassName(args)`
+- **Java**: [references/java-api.md](references/java-api.md) — `import matrix_science.msparser.*;`, constructor syntax: `new ClassName(args)`
+- **C#**: [references/csharp-api.md](references/csharp-api.md) — `using matrix_science.msparser;`, constructor syntax: `new ClassName(args)`, **note: `_params()` not `params()`**
 - The API method names are identical across all bindings. Only constructors, constant access, and object syntax differ.
 
 ## IMPORTANT: Safety Rules
@@ -433,7 +433,9 @@ The msparser SDK ships with example scripts in `<MSPARSER_SDK>/example_python/`,
 ## Detailed References
 
 - [Perl API Reference](references/perl-api.md) - Perl-specific method signatures, constructors, constants, and complete working patterns
+- [Java API Reference](references/java-api.md) - Java-specific setup (`System.loadLibrary`), array out-parameters, and complete working patterns
+- [C# API Reference](references/csharp-api.md) - C#-specific gotchas (`_params()`, enum wrappers, `GC.KeepAlive`, `out` parameters)
 - [API Class Reference](references/api-classes.md) - full method signatures for all key classes including `ms_mascotresults_params`
-- [Common Recipes](references/common-recipes.md) - copy-paste code patterns for common tasks
+- [Common Recipes](references/common-recipes.md) - copy-paste code patterns for common tasks (Python)
 - [Server Configuration](references/server-config.md) - directory layout, authentication flow
 - [Obsolete Examples](references/obsolete-examples.md) - which SDK example scripts need modernizing
