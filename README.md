@@ -96,7 +96,15 @@ The skill will guide the assistant on correct API names, language-specific synta
 
 ### Credentials in your own project
 
-The skill steers the assistant toward loading Mascot credentials from environment variables or a `.env` file (e.g. `MASCOT_USER`, `MASCOT_PASS`). **Make sure your project's `.gitignore` excludes `.env`** so you don't accidentally commit your Mascot login. A minimal entry:
+The skill steers the assistant toward loading Mascot credentials from environment variables or a `.env` file. A minimal `.env` looks like:
+
+```ini
+MASCOT_USER=your-username
+MASCOT_PASS=your-password
+MASCOT_URL=https://your-mascot-server/mascot/cgi
+```
+
+**Make sure your project's `.gitignore` excludes `.env`** so you don't accidentally commit your Mascot login:
 
 ```gitignore
 .env
