@@ -1,6 +1,6 @@
 # Mascot Parser Skill
 
-**Version:** 1.0.0 &nbsp;|&nbsp; **License:** GPL-2.0
+**Version:** 1.0.0 &nbsp;|&nbsp; **License:** Apache-2.0
 
 An Agent Skill that teaches AI coding assistants how to write scripts against the Mascot Server **msparser** SDK (Python, Perl, Java, C#).
 
@@ -130,6 +130,6 @@ The `msparser/`, `Documentation/`, and `mascot server scripts/` directories are 
 
 ## License
 
-The skill content in this repository (the markdown under `skills/` and the documentation files at the repo root) is licensed under the **GNU General Public License, version 2** (GPL-2.0). See [LICENSE](LICENSE) for the full text.
+The skill content in this repository (the markdown under `skills/` and the documentation files at the repo root) is licensed under the **Apache License, Version 2.0** (Apache-2.0). See [LICENSE](LICENSE) for the full text.
 
 The msparser SDK itself is **not** covered by this license — it is proprietary software licensed separately by Matrix Science. You must obtain it from https://www.matrixscience.com/msparser_download.html under its own terms.
