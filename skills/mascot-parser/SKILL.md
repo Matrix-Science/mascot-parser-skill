@@ -2,7 +2,7 @@
 name: mascot-parser
 description: Mascot Parser (msparser) Skill
 version: 1.0.0
-license: GPL-2.0
+license: Apache-2.0
 ---
 
 # Mascot Parser (msparser) Skill
