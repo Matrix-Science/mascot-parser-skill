@@ -597,3 +597,202 @@ def export_mgf(resfile, output_path):
 
             f.write("END IONS\n\n")
 ```
+
+---
+
+## 18. CRITICAL: chdir to Mascot CGI dir before opening result files
+
+`msparser` resolves the unimod XML schema (`unimod_2.xsd`) via a *relative path*
+`../html/xmlns/schema/unimod_2/unimod_2.xsd`. If your CWD is anywhere outside
+`<MASCOT_HOME>/cgi/`, the schema fails to load — `getLastErrorString()` reports
+"Failed to load unimod xml file" and `pep.getPeptideStr()` returns empty
+strings on every peptide (silent failure, no exception). PSM counts via
+`getNumberOfHits()` come back as 0.
+
+**Always:**
+```python
+import os
+os.chdir(r"C:\inetpub\mascot\cgi")  # Linux: /usr/local/mascot/cgi
+resfile = msparser.ms_mascotresfilebase.createResfile(path)
+```
+
+This is not documented in the SDK guide but is required by every script that
+opens local result files. The QC dashboard (`mascot_qc_report.py`) does this
+explicitly; copy that pattern.
+
+---
+
+## 19. Get PSM/sequence counts at a target FDR (the right way)
+
+The naive call `getNumHitsAboveIdentity(0.05, ...)` returns counts at the *raw*
+identity threshold (p ≤ 0.05). To match the CSV-export-header convention
+(counts at 1 % FDR-adjusted threshold) use `getThresholdForFDRAboveIdentity`,
+which returns a **list of 5 values** `[ok, achieved_FDR, sigLevel, n_target, n_decoy]`:
+
+```python
+M = msparser.ms_mascotresults
+target_fdr = 0.01
+
+# 3-arg overload — db_match_type ONLY accepts DS_IDENTITY (DS_HOMOLOGY returns
+# [False, -1, -1, -1, -1]).
+def fdr_count(method, count_type):
+    r = method(target_fdr, count_type, M.DS_IDENTITY)
+    if not r or len(r) < 5 or not r[0]:
+        return 0, 0, 0.0
+    return int(r[3]), int(r[4]), float(r[1])  # target, decoy, achieved_fdr
+
+n_psm_target,  n_psm_decoy,  fdr_psm = fdr_count(
+    results.getThresholdForFDRAboveIdentity, M.DS_COUNT_PSM)
+n_seq_target,  n_seq_decoy,  fdr_seq = fdr_count(
+    results.getThresholdForFDRAboveIdentity, M.DS_COUNT_SEQUENCE)
+n_psm_target_h, n_psm_decoy_h, _ = fdr_count(
+    results.getThresholdForFDRAboveHomology, M.DS_COUNT_PSM)
+```
+
+Constants: `DS_COUNT_PSM = 0`, `DS_COUNT_SEQUENCE = 1`, `DS_IDENTITY = 0`,
+`DS_HOMOLOGY = 1` (the latter is used as a `db_match_type` by some methods but
+**not** by `getThresholdForFDR*` — pass `DS_IDENTITY` there).
+
+Why this matters: `setTargetFDR(0.01)` only affects the *threshold function used
+during summary creation*. The count APIs always take an explicit sig_level,
+and the right one for "1 % FDR" is what `getThresholdForFDR*` returns — not 0.05.
+
+**There is no `pep.isDecoy()` method.** Don't try to detect decoys by walking
+peptides and checking accession prefixes; use the API above, which classifies
+hits via the result file's embedded decoy flag.
+
+---
+
+## 20. Read Percolator-rescored results: stage cache files in a tmp dir
+
+Setting `MSPEPSUM_PERCOLATOR` on a result-params object alone is **not enough**
+— `ms_peptidesummary(resfile, params)` will create with `getNumberOfHits() = 0`
+and any `getPeptide()` call will raise
+"Attempting to call function ... before createSummary() has completed".
+
+The hash msparser computes locally on `mascot.dat` may differ from the hash
+the server used when it wrote the `.target.pop` / `.decoy.pop` / `.pip` files
+in `<MASCOT_HOME>/data/cache/YYYY/MM/<server_hash>/`. The fix (mirrors what
+the QC dashboard does):
+
+1. Open the resfile pointed at a **fresh tmp dir** as cache_dir.
+2. Call `setPercolatorFeatures` with the same `ml_adapter_param` values that
+   the search used (e.g. `MS2Rescore.ms2pip_model=HCD2019`).
+3. Read the *expected* filenames via `getPercolatorFileNames()` — returns
+   tuple `(pip, target.pop, decoy.pop)`.
+4. Copy the real server cache files to the expected paths in the tmp dir.
+5. Set `MSPEPSUM_PERCOLATOR` and create the summary.
+
+```python
+import os, glob, shutil, tempfile
+from pathlib import Path
+
+def open_with_percolator(res_path, adapter_params):
+    os.chdir(r"C:\inetpub\mascot\cgi")  # see recipe 18
+
+    # Find server-written cache for this resfile
+    res_name = os.path.basename(res_path)
+    real_target = glob.glob(rf"C:\inetpub\mascot\data\cache\*\*\*\{res_name}.*.target.pop")
+    if not real_target:
+        return None  # search wasn't Percolator-rescored
+    real_dir = os.path.dirname(real_target[0])
+    final_hash = os.path.basename(real_target[0]).rsplit('.target.pop', 1)[0].split('.')[-1]
+    real_decoy = os.path.join(real_dir, f"{res_name}.{final_hash}.decoy.pop")
+    real_pip   = os.path.join(real_dir, f"{res_name}.{final_hash}.pip")
+
+    # Open into tmp cache dir, set features, get expected filenames
+    tmp = tempfile.mkdtemp(prefix="perc_cache_")
+    df = msparser.ms_datfile(r"C:\inetpub\mascot\config\mascot.dat")
+    opts = df.getMascotOptions()
+    rf = msparser.ms_mascotresfilebase.createResfile(res_path, 0, "", 0, tmp)
+    opts.setPercolatorExeFlags(opts.getPercolatorRtFlags(rf.hasRT(), opts.isPercolatorUseRT()))
+    vs = msparser.VectorString()
+    for p in adapter_params: vs.append(p)
+    rf.setPercolatorFeatures(opts, "", vs)
+
+    expected_pip, expected_target, expected_decoy = rf.getPercolatorFileNames()
+    for src, dst in [(real_pip, expected_pip),
+                     (real_target, expected_target),
+                     (real_decoy, expected_decoy)]:
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dst)
+
+    # Now build params and summary
+    rp = msparser.ms_mascotresults_params()
+    rf.get_ms_mascotresults_params(opts, rp)
+    flags2 = rp.getFlags2() | msparser.ms_peptidesummary.MSPEPSUM_PERCOLATOR
+    rp.setFlags2(flags2)
+    rp.setTargetFDR(0.01)
+    rp.setTargetFDRType(msparser.ms_mascotresults.DS_COUNT_SEQUENCE)
+    return msparser.ms_peptidesummary(rf, rp), rf
+```
+
+After this, `rf.getPercolatorFileNames()` returns a 3-tuple
+`(pip, target.pop, decoy.pop)` (note pip is FIRST, not last). The QC
+dashboard's `stage_percolator_cache` follows exactly this pattern.
+
+## 21. Read the `.target.pop` directly (FDR-passing PSMs, family-member-safe)
+
+When you only need the **FDR-passing PSMs** (and per-protein roll-ups built from
+them), you can skip the `ms_peptidesummary` staging dance of recipe 20 entirely
+and read the server's `.target.pop` table directly. This is the most robust path
+for per-protein identification/quant because grouping by the `proteinIds` column
+captures **representatives AND family members** automatically — it sidesteps the
+`getHit()`-returns-representatives-only blind spot (see SKILL.md → *Reading all
+proteins: family members, not just `getHit()`*).
+
+`.target.pop` is tab-separated with a header row. Key columns: `PSMId`
+(`query:N;rank:M` — **N is the msparser query number**), `score`, `q-value`,
+`posterior_error_prob`, `peptide` (`X.SEQUENCE.X`), `proteinIds` (space-separated
+accessions). msparser is still used — but only for **spectrum/peak access** via
+`ms_inputquery`, which is reliable on the SQLite `.msr`.
+
+```python
+import os, glob, re
+import msparser
+
+PSMID_RE = re.compile(r"query:(\d+);rank:(\d+)")
+
+def find_target_pop(cache_root, res_name):
+    hits = glob.glob(os.path.join(cache_root, "*", "*", "*", f"{res_name}.*.target.pop"))
+    return hits[0] if hits else None
+
+def proteins_from_target_pop(res_path, cache_root, target_fdr=0.01):
+    """Group FDR-passing PSMs by protein — reps AND family members included."""
+    pop = find_target_pop(cache_root, os.path.basename(res_path))
+    if not pop:
+        return None  # search wasn't Percolator-rescored
+    resfile = msparser.ms_mascotresfilebase.createResfile(res_path)  # peaks only
+
+    by_protein = {}  # acc -> {"psms": int, "seqs": set, "queries": set}
+    with open(pop, encoding="utf-8") as fh:
+        next(fh)  # header
+        for line in fh:
+            f = line.rstrip("\n").split("\t")
+            if len(f) < 6:
+                continue
+            try:
+                q = float(f[2])            # q-value column
+            except ValueError:
+                continue
+            if q > target_fdr:
+                continue
+            m = PSMID_RE.search(f[0])       # PSMId -> query N
+            if not m:
+                continue
+            query = int(m.group(1))         # use with ms_inputquery(resfile, query)
+            pepfield = f[4]                 # X.SEQ.X
+            seq = pepfield.split(".")[1] if pepfield.count(".") >= 2 else pepfield
+            for acc in f[5].split():        # proteinIds, space-separated
+                d = by_protein.setdefault(acc, {"psms": 0, "seqs": set(), "queries": set()})
+                d["psms"] += 1
+                d["seqs"].add(seq)
+                d["queries"].add(query)
+    return by_protein
+```
+
+For TMT/iTRAQ quant, read each passing PSM's spectrum with
+`ms_inputquery(resfile, query)`, sum the reporter-ion intensities (nearest peak
+within tolerance per channel), and add them to every protein in `proteinIds`. A
+complete working extractor is in the project at
+`TPP2D/scripts/msr_to_quant_summary_pop.py`.

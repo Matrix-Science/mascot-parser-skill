@@ -1,8 +1,6 @@
 ---
 name: mascot-parser
 description: Mascot Parser (msparser) Skill
-version: 1.0.0
-license: Apache-2.0
 ---
 
 # Mascot Parser (msparser) Skill
@@ -93,7 +91,7 @@ if not resfile.isValid():
 
 ```python
 params = resfile.params()  # returns ms_searchparams
-params.getDB()       # database name
+params.getDB()       # PRIMARY database name (see multi-DB note below)
 params.getCOM()      # search title
 params.getTOL()      # peptide tolerance
 params.getTOLU()     # tolerance units
@@ -108,6 +106,26 @@ params.getMASS()     # Monoisotopic or Average
 params.getCHARGE()   # charge state
 params.getINSTRUMENT()  # instrument type
 ```
+
+#### Multi-database searches: `getDB()` is not enough
+
+Mascot supports searching multiple databases in a single submission (`DB`, `DB2`, `DB3`, ... in the search form, common when Distiller users tick multiple databases in the search dialog). **`params.getDB()` returns only the primary (first) database — silently hiding the rest.** Reporting "the database is X" based on `getDB()` alone is a confident-sounding bug when the actual search used more than one.
+
+Always enumerate all databases. The indexed `getDB(i)` is **1-based** (consistent with queries, peptide ranks, fixed/variable mod indices, MS1 match iteration, etc.; only component indexing is 0-based):
+
+```python
+n = params.getNumberOfDatabases()
+dbs = [params.getDB(i) for i in range(1, n + 1)]   # 1-based
+```
+
+| Call | Behaviour |
+|------|-----------|
+| `params.getDB()` | Primary DB only — equivalent to `params.getDB(1)` |
+| `params.getDB(0)` | Returns `''` (no DB at index 0) |
+| `params.getDB(i)` for `1 <= i <= getNumberOfDatabases()` | Database name at slot `i` |
+| `params.getNumberOfDatabases()` | Total count — always check this before reporting "the database" |
+
+Any summary tool should print all databases when `getNumberOfDatabases() > 1`. Distiller-side note: the `<SearchOptions>` blocks inside a `.rov`'s `rover_data` stream carry empty `Database` attributes — those are GUI preference templates, not the executed search. The authoritative DB list is on the embedded `.dat`'s `params` object.
 
 ### Creating Results: The Two-Argument Constructor (Recommended)
 
@@ -314,6 +332,126 @@ while prot:
     prot = results.getHit(hit)
 ```
 
+**⚠️ This loop sees only family representatives — see the next section if you
+need every identified protein.**
+
+## Reading all proteins: family members, not just `getHit()`
+
+`ms_peptidesummary.getHit(n)` (and `ms_proteinsummary.getHit(n)`) returns **only
+the protein-family REPRESENTATIVE** of each family. When result clustering is on
+(it is, by default, in the canonical reader — `setProteinFamilySwitch(1)` /
+`MSRES_CLUSTER_PROTEINS`), homologous proteins that group into a family are
+stored as family **MEMBERS** and are **invisible to a `getHit()`-only loop**. A
+reps-only extractor silently drops them — they were identified, they pass FDR,
+and they never appear in your output.
+
+**Verified failure (Mascot Server 3.1.241.27):** in a published *Vibrio
+cholerae* 2D-TPP study, the three validated chemoreceptor hits — UniProt
+**Q9KSE4** (VC1313), **Q9KQ43** (VC2161), **Q9KS54** (VC1406) — cluster into a
+single 38-member family whose representative is **Q9KVD0** (VC2161 is family 251,
+member 7). A `getHit()`-only loop dropped ~189 member proteins across 5 samples,
+including all three biological hits, even though every one passed Percolator at
+q = 0. On a routine bacterial TMT search, walking members recovered 66 extra
+proteins that `getHit` alone missed (2690 vs 2624) — exactly
+`getNumberOfFamilyMembers()`.
+
+### Walking family members
+
+There are two APIs. **`getNextFamilyProtein(masterHit, id)` is the simpler
+per-family iterator** and is what most code should use:
+
+```python
+def iter_all_proteins(results):
+    """Yield (protein, representative_accession_or_None) for EVERY protein."""
+    n = results.getNumberOfHits()
+    for hit in range(1, n + 1):                 # 1-based
+        rep = results.getHit(hit)
+        if rep is None:
+            break
+        yield rep, None                         # the representative
+        rep_acc = rep.getAccession()
+        member_id = 1
+        while True:
+            member = results.getNextFamilyProtein(hit, member_id)
+            if member is None:                  # no more members in this family
+                break
+            yield member, rep_acc               # a homologous family member
+            member_id += 1
+```
+
+`getNextFamilyProtein` returns `None` at `member_id = 1` when a family has no
+extra members, so this degrades cleanly to a plain `getHit` walk on
+non-clustered results. Family members expose the same `ms_protein` interface as
+representatives (`getAccession`, `getScore`, `getNumPeptides`,
+`getPeptideQuery`/`getPeptideP`, quant lookups all work on them).
+
+The lower-level alternative is **`getHitAndFamilyMember(prot, hitAndFamily,
+rules)`**, where the 3rd argument is a `ms_mascotresults::hitAndFamily_t` cursor
+(NOT a simple int) and `rules` combines `FC_PROTEIN_IGN_*` flags
+(`FC_PROTEIN_IGN_SUBSETS`, `FC_PROTEIN_IGN_SAMESETS`, `FC_PROTEIN_IGN_FAMILY`,
+`FC_PROTEIN_IGN_MASK`). Use it when you need fine control over which
+subset/sameset/family relationships to traverse. Note
+`getNumberOfFamilyMembers()` is a **GLOBAL** total across the whole result, not a
+per-family count — don't use it to bound a per-family loop; iterate
+`getNextFamilyProtein` until it returns `None` instead.
+
+### Gotcha summary
+
+| Call | What it returns |
+|------|-----------------|
+| `getHit(n)` | family REPRESENTATIVE only — members are hidden |
+| `getNextFamilyProtein(hit, id)` | the `id`-th member of family `hit`; `None` past the last |
+| `getNumberOfFamilyMembers()` | GLOBAL member total (all families) — not a per-family bound |
+| `getNumberOfHits()` | number of representatives (= number of families) |
+
+## Importing Percolator results (not in the `.msr`)
+
+**Percolator / ML-rescored results are NOT stored in the SQLite `.msr`.** They
+live in server cache files written when Percolator ran:
+
+```
+<MASCOT_HOME>/data/cache/<YYYY>/<MM>/<hash>/<res>.<hash>.target.pop   # FDR-passing target PSMs
+                                            <res>.<hash>.decoy.pop    # decoy PSMs
+                                            <res>.<hash>.pip          # Percolator input
+```
+
+To get Percolator scores through msparser you must **import** them — the
+canonical reader (`master_results_2.pl` →
+`<MASCOT_HOME>/perl64/site/lib/PeptideSummary/Util.pm::make_ms_mascotresults_params`)
+builds the summary with clustering and Percolator on by default:
+`setProteinFamilySwitch(1)`, flags `MSRES_CLUSTER_PROTEINS | MSRES_SHOW_SUBSETS`,
+Percolator enabled, `MSPEPSUM_USE_CACHE`, `setIgnoreIonsScoreBelow(...)`,
+`setUsePeptideSummary(1)`. msparser computes its own cache hash and often looks
+under a *different* path than the server wrote, so on real installs you must
+stage the server's actual `.pop`/`.pip` files where msparser expects them (glob
+the server cache, prime `setPercolatorFeatures`, copy to
+`getPercolatorFileNames()`, then set `MSPEPSUM_PERCOLATOR`) — see
+[Common Recipes](references/common-recipes.md) recipe 20.
+
+### The `.target.pop` is directly usable and authoritative
+
+For FDR-passing PSMs you often don't need msparser's summary at all — the
+`.target.pop` is a tab-separated table you can read directly. Columns:
+
+| Column | Meaning |
+|--------|---------|
+| `PSMId` | `query:N;rank:M` — **N is the msparser query number**, so the spectrum/peaks are reachable via `ms_inputquery(resfile, N)` |
+| `score` | Percolator score |
+| `q-value` | Percolator q-value — filter `q <= target FDR` |
+| `posterior_error_prob` | PEP |
+| `peptide` | `X.SEQUENCE.X` (flanking residues either side of dots) |
+| `proteinIds` | space-separated accessions; a peptide mapping to exactly one accession is unique to it |
+
+**Recommended robust pattern — drive per-protein identification/quant off the
+`.target.pop` PSMs:** read the rows, keep `q <= target FDR`, group by
+`proteinIds`. This captures representatives **AND** family members automatically
+and bypasses the `getHit()` blind spot entirely. For quant, parse `query:N` out
+of `PSMId`, read that spectrum with `ms_inputquery(resfile, N)`, sum the reporter
+ions, and add the PSM's reporter sums to every protein in `proteinIds`. A
+complete working TMT extractor built this way (PSMId parsing, cache glob,
+`ms_inputquery` peak access) is in the project at
+`TPP2D/scripts/msr_to_quant_summary_pop.py`.
+
 ### Getting Peptides for a Protein
 
 ```python
@@ -415,14 +553,15 @@ for u in range(1, 1 + results.getNumberOfUnassigned()):
 
 1. **`createResfile` not `createResFile`** - the 'f' is lowercase
 2. **Always check `isValid()`** after creating objects, then `getLastErrorString()` for details
-3. **1-based indexing** - queries, peptide ranks, peak indices all start at 1
+3. **1-based indexing** - queries, peptide ranks, peak indices, fixed/variable mod indices, MS1 match iteration, AND `params.getDB(i)` for multi-DB enumeration all start at 1. (Component indexing in quantitation is the exception — that's 0-based.)
+3a. **Multi-DB searches**: `params.getDB()` returns only the primary database. Always enumerate via `params.getNumberOfDatabases()` + `params.getDB(i)` for `i in 1..N`. See [Search Parameters → Multi-database searches](#search-parameters) above. Reporting a single DB name from `getDB()` alone is a known footgun.
 4. **Use `PROXY_TYPE_NO_PROXY`** for localhost connections
 5. **Use the two-argument constructor** for `ms_peptidesummary` / `ms_proteinsummary` — the multi-argument constructor is obsolete
-6. **Protein iteration** - `getHit(n)` returns `None` when no more hits; start at 1
+6. **Protein iteration** - `getHit(n)` returns `None` when no more hits; start at 1. **But `getHit()` returns family REPRESENTATIVES only** — homologous family members are hidden. To read every identified protein, also walk `getNextFamilyProtein(hit, id)`. See [Reading all proteins: family members, not just `getHit()`](#reading-all-proteins-family-members-not-just-gethit).
 7. **Peptide duplicate check** - always check `getPeptideDuplicate(i) != DUPE_DuplicateSameQuery` before processing
 8. **Error handling pattern**: check `isValid()` first, then `getLastErrorString()`, then `clearAllErrors()`
 9. **ms_datfile can read from URL** - pass `ms_connection_settings` with session ID as third argument
-10. **Result files** are `.dat` (text) or `.msr` (binary) format; both opened the same way
+10. **Result files** are `.dat` (text) or `.msr` (binary) format; both opened the same way — **EXCEPT** the new Mascot 3.x SQLite-backed `.msr`: on **large DIA** results `ms_peptidesummary`/`ms_proteinsummary` can return 0 hits or hang, in which case read the SQLite tables directly ([SQLite-backed `.msr`](references/sqlite-msr.md)). **Do not mistake the more common "missing proteins" causes for a SQLite-format problem:** (a) family members hidden behind `getHit()` (see [Reading all proteins](#reading-all-proteins-family-members-not-just-gethit)); (b) Percolator/FDR-passing hits that live in cache `.pop` files, not the `.msr` at all (see [Importing Percolator results](#importing-percolator-results-not-in-the-msr)). Neither is fixed by switching to raw SQL.
 11. **FDR target is a decimal** - `setTargetFDR(0.01)` for 1%, not `setTargetFDR(1)`
 12. **Significance test** - `getIonsScore() >= getPeptideThreshold(q, 20, rank)` is equivalent to `getExpectationValue() <= 0.05`
 
@@ -441,3 +580,4 @@ The msparser SDK ships with example scripts in `<MSPARSER_SDK>/example_python/`,
 - [Common Recipes](references/common-recipes.md) - copy-paste code patterns for common tasks (Python)
 - [Server Configuration](references/server-config.md) - directory layout, authentication flow
 - [Obsolete Examples](references/obsolete-examples.md) - which SDK example scripts need modernizing
+- [SQLite-backed `.msr`](references/sqlite-msr.md) - Mascot 3.x writes `.msr` as a SQLite DB; `ms_peptidesummary` fails on large DIA results; full table schema + direct-SQL recipes
