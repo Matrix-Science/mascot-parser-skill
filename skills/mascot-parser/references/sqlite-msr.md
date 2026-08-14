@@ -147,6 +147,38 @@ Notes:
 - `varmods_string` is one digit per peptide residue position (plus N-/C-term slots); a digit `n` means variable mod `mod_num = n` (from `search__variable_mods`) is on that residue. All-zeros = unmodified.
 - The `quant_component_name` column links a PSM to a Mascot Distiller quant component, but the **integrated XIC areas themselves are not in the `.msr`** — they live in the Distiller `.rov` project's binary segment streams (see the `mascot-distiller` skill's `ROV_FILE_FORMAT.md`). For a quick label-free proxy you can trapezoidally integrate `query__summary.intensity` vs `query__data.rt_in_seconds` over the matched PSMs of a peptide form — symmetric across forms, so ratios are robust, but it underestimates the true Distiller XIC.
 
+## Per-PSM protein accessions: msparser methods return EMPTY on `.msr`
+
+Verified on Mascot 3.1.242 / msparser 3.x (2026-08): with a working
+`ms_peptidesummary` over an `.msr`, the accession routes that work on `.dat`
+**silently return nothing** for proteins outside the report hit list —
+`summary.getProteinsWithThisPepMatch(q, r)` → empty string,
+`pep.getProteins()` → empty tuple, and section access
+(`getSectionValueStr(SEC_PEPTIDES, "qN_pM")`) does not exist for `.msr` at
+all (`ms_mascotresfilebase` has no SEC_ constants; they live on
+`ms_mascotresfile_dat`). Code ported from `.dat` workflows (e.g.
+fdr_stats.pl) will run without error and classify zero matches.
+
+**The working hybrid pattern** — msparser for scores/expect/pretty-rank,
+SQLite for accessions, joined on `(query_id, rank_id)`:
+
+```python
+resfile = msparser.ms_mascotresfilebase.createResfile(path)
+summary = msparser.ms_peptidesummary(resfile, flags, 0.05, 1, "", 0, 5, "",
+                                     msparser.ms_peptidesummary.MSPEPSUM_NONE)
+expect = summary.getPeptideExpectationValue(pep.getIonsScore(), q)
+
+acc = {}   # (query_id, rank_id) -> [accessions]
+for q, r, a in sqlite3.connect(path).execute(
+        "SELECT p.query_id, p.rank_id, d.accession_str "
+        "FROM psm__proteins p JOIN protein__data d "
+        "ON p.protein_id = d.protein_id AND p.psm_type = 0"):
+    acc.setdefault((q, r), []).append(a)
+```
+
+(Used by `fdr_stats_compare.py` in the mascot-entrapment-tools repo; see the
+`mascot-entrapment-audit` skill.)
+
 ## When msparser *does* still work on a SQLite `.msr`
 
 - `resfile = ms_mascotresfilebase.createResfile(path)` — opens fine (`isValid()` True).
