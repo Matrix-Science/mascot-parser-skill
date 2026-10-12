@@ -1,6 +1,6 @@
 ---
 name: mascot-parser
-description: Mascot Parser (msparser) Skill
+description: Write scripts against the Mascot Parser (msparser) SDK in Python, Perl, Java or C#. Use when reading Mascot Server results files (.dat, or the SQLite-backed .msr of Mascot 3.x, including the copy embedded in a Distiller .rov), building ms_peptidesummary / ms_proteinsummary, listing proteins (including family members), peptide-to-protein accessions, target/decoy and FDR counts, error-tolerant matches, Percolator / ML-rescored (.pop/.pip) results, spectra via ms_inputquery, reading mascot.dat configuration, or submitting searches and logging in through ms_http_client. Also use when a summary returns 0 hits, accessions come back empty on .msr, or msparser fails to import or load.
 ---
 
 # Mascot Parser (msparser) Skill
@@ -31,6 +31,10 @@ After downloading, extract the SDK. The bindings are organized by language:
 - Perl: `<MSPARSER_SDK>/perl5XX/` (version-matched)
 - Java: `<MSPARSER_SDK>/java/msparser.jar`
 - C#: `<MSPARSER_SDK>/csharp_vs2019/`
+
+`msparser.py` and `_msparser.pyd` / `_msparser.so` must come from the same SDK download. On Linux, `_msparser.so` needs `libcurl.so.4`; slim Debian/Ubuntu images lack it (`apt-get install libcurl4`). Version check: `resfile.getMSParserVersion()` (there is no `msparser.ms_version`). Mascot Server, Distiller and ML adapters each bundle their own, possibly different, msparser build.
+
+Observed once: after `import msparser` in a Python process driving MDRO, CreatePeakLists/CreateSpectrum failed; cause unconfirmed. Keep msparser and MDRO in separate processes (see the `mascot-mdro` skill).
 
 ## Platform Paths
 
@@ -79,7 +83,9 @@ All languages use the same factory method:
 | Java | `ms_mascotresfilebase resfile = ms_mascotresfilebase.createResfile(path);` |
 | C# | `ms_mascotresfilebase resfile = ms_mascotresfilebase.createResfile(path, 0, "");` |
 
-**NOTE:** lowercase 'f' in `createResfile` — not `createResFile`.
+**NOTE:** lowercase 'f' in `createResfile` — not `createResFile`. There is no plain `ms_mascotresfile` class in 3.x Python builds; `createResfile` returns an `ms_mascotresfile_dat` or `ms_mascotresfile_msr` as appropriate.
+
+Full signature: `createResfile(path, keepAliveInterval=0, keepAliveText, flags=RESFILE_NOFLAG, cacheDirectory="../data/cache/%Y/%m", XMLschemaDirectory)`. The cache directory is the **5th** argument and is relative to `<MASCOT_HOME>/cgi`, so chdir there first ([Common Recipes](references/common-recipes.md) recipe 18).
 
 Always check validity:
 ```python
@@ -106,6 +112,8 @@ params.getMASS()     # Monoisotopic or Average
 params.getCHARGE()   # charge state
 params.getINSTRUMENT()  # instrument type
 ```
+
+Parameters without a typed getter (e.g. `DATA_INDEPENDENT_ACQUISITION`): on `.msr` use `resfile.getSearchParameter("KEY")` or `resfile.getSearchParametersKeyValues()` / `getHeaderKeyValues()`. `getSectionValueStr(SEC_PARAMETERS, ...)` exists only on `ms_mascotresfile_dat`.
 
 #### Multi-database searches: `getDB()` is not enough
 
@@ -187,6 +195,12 @@ resfile.get_ms_mascotresults_params(mascotOptions, resParams)
 
 # Optional: set target FDR
 resParams.setTargetFDR(0.01)
+
+# The stored defaults can include MSPEPSUM_PERCOLATOR (e.g. flags2 = 267) for a
+# Percolator/ML-rescored search. Without Percolator set up (see Percolator
+# Integration) the summary silently has 0 hits. Either set it up or clear it:
+PERC = msparser.ms_peptidesummary.MSPEPSUM_PERCOLATOR
+resParams.setFlags2(resParams.getFlags2() & ~PERC)
 
 if resParams.isUsePeptideSummary():
     results = msparser.ms_peptidesummary(resfile, resParams)
@@ -295,19 +309,51 @@ Percolator requires:
 
 ### Enable Percolator
 
-Set the `MSPEPSUM_PERCOLATOR` flag in `flags2`:
+Setting the `MSPEPSUM_PERCOLATOR` flag **alone gives a summary with 0 hits**
+(no error). msparser must find the `.pip` / `.target.pop` / `.decoy.pop` files
+the server wrote, and their cache path is a hash of the Percolator features
+**and the ML adapter parameters**. Reproduce what `protein_view.pl` /
+`master_results_2.pl` do (mirrors MascotResults.pm; a probe with these inputs
+located the server's `.pip`/`.pop` on Mascot 3.1, MS2Rescore results):
 
 ```python
-flags2 = resParams.getFlags2()
-flags2 |= msparser.ms_peptidesummary.MSPEPSUM_PERCOLATOR
-resParams.setFlags2(flags2)
+os.chdir("<MASCOT_HOME>/cgi")                       # cache dir is relative
+opts = msparser.ms_datfile("../config/mascot.dat").getMascotOptions()
+rf = msparser.ms_mascotresfilebase.createResfile(
+    path, 0, "", msparser.ms_mascotresfilebase.RESFILE_USE_CACHE,
+    opts.getCacheDirectory())
+# as MascotResults.pm does: the raw mascot.dat PercolatorExeFlags are not used verbatim
+opts.setPercolatorExeFlags(opts.getPercolatorRtFlags(rf.hasRT(), opts.isPercolatorUseRT()))
+# ML adapter params stored with the search, overridden by any the user chose
+# in the report URL; sorted "key=value" strings
+ml = dict(kv.split("=", 1) for kv in rf.params().getML_ADAPTER_PARAM() if "=" in kv)
+ml_vec = msparser.VectorString()
+for k in sorted(ml):
+    if ml[k] == "":          # skip keys with empty values, as protein_view.pl does
+        continue
+    ml_vec.append(f"{k}={ml[k]}")
+rf.setPercolatorFeatures(opts, "", ml_vec)
+missing = [f for f in rf.getPercolatorFileNames()     # (pip, target.pop, decoy.pop)
+           if not (os.path.exists(f) and os.path.getsize(f) > 0)]
+if missing:   # server never ran Percolator with these settings: open the report once in Mascot
+    raise RuntimeError(f"Percolator files not found: {missing}")
+resParams = msparser.ms_mascotresults_params()
+rf.get_ms_mascotresults_params(opts, resParams)
+resParams.setFlags2(resParams.getFlags2() | msparser.ms_peptidesummary.MSPEPSUM_PERCOLATOR)
+results = msparser.ms_peptidesummary(rf, resParams)
 ```
 
+`getML_ADAPTER_PARAM()` returns a tuple of `key=value` strings (empty for a
+plain Percolator search). The probe differed slightly: it ran with
+`setPercolatorUseRT(False)` and passed the cache dir in the 3rd
+(`keepAliveText`) slot, so the default `../data/cache/%Y/%m` is what matched;
+the 5th-argument form above follows the header. If the paths still don't match the server's files,
+the copy-into-a-temp-cache fallback is [Common Recipes](references/common-recipes.md)
+recipe 20; for FDR-passing PSMs only, read the `.target.pop` directly (below).
+
 ```perl
-# Perl
-my $flags2 = $resParams->getFlags2();
-$flags2 |= $msparser::ms_peptidesummary::MSPEPSUM_PERCOLATOR;
-$resParams->setFlags2($flags2);
+# Perl: same sequence; the flag itself is
+$resParams->setFlags2($resParams->getFlags2() | $msparser::ms_peptidesummary::MSPEPSUM_PERCOLATOR);
 ```
 
 ### Check if Percolator is enabled by default
@@ -421,12 +467,10 @@ canonical reader (`master_results_2.pl` →
 builds the summary with clustering and Percolator on by default:
 `setProteinFamilySwitch(1)`, flags `MSRES_CLUSTER_PROTEINS | MSRES_SHOW_SUBSETS`,
 Percolator enabled, `MSPEPSUM_USE_CACHE`, `setIgnoreIonsScoreBelow(...)`,
-`setUsePeptideSummary(1)`. msparser computes its own cache hash and often looks
-under a *different* path than the server wrote, so on real installs you must
-stage the server's actual `.pop`/`.pip` files where msparser expects them (glob
-the server cache, prime `setPercolatorFeatures`, copy to
-`getPercolatorFileNames()`, then set `MSPEPSUM_PERCOLATOR`) — see
-[Common Recipes](references/common-recipes.md) recipe 20.
+`setUsePeptideSummary(1)`. msparser looks under a *different* cache path than
+the server wrote unless you open with `RESFILE_USE_CACHE` and pass the ML adapter
+parameters to `setPercolatorFeatures` — see *Enable Percolator* above. Staging
+copies of the server's files (recipe 20) is the fallback.
 
 ### The `.target.pop` is directly usable and authoritative
 
@@ -447,10 +491,14 @@ For FDR-passing PSMs you often don't need msparser's summary at all — the
 `proteinIds`. This captures representatives **AND** family members automatically
 and bypasses the `getHit()` blind spot entirely. For quant, parse `query:N` out
 of `PSMId`, read that spectrum with `ms_inputquery(resfile, N)`, sum the reporter
-ions, and add the PSM's reporter sums to every protein in `proteinIds`. A
-complete working TMT extractor built this way (PSMId parsing, cache glob,
-`ms_inputquery` peak access) is in the project at
-`TPP2D/scripts/msr_to_quant_summary_pop.py`.
+ions, and add the PSM's reporter sums to every protein in `proteinIds`.
+
+**`.pip` / `.pop` rank is not always msparser's rank.** On a top-down search,
+~8% of `query:N;rank:M` rows named a different peptide from
+`summary.getPeptide(N, M)` (the pip's rank 1 was msparser rank 7, etc.). When
+joining pip/pop rows to msparser objects, scan the query's ranks and match on
+peptide string, then ions score, then mass; stop at the first
+`not pep.getAnyMatch()`.
 
 ### Getting Peptides for a Protein
 
@@ -474,6 +522,45 @@ for i in range(1, 1 + prot.getNumPeptides()):
         readable_mods = results.getReadableVarMods(query, rank)
         significant = score >= results.getPeptideThreshold(query, 20, rank)
 ```
+
+### Proteins for a peptide match (target/decoy classification)
+
+`getProteinsWithThisPepMatch(q, rank)` returns a **string** (`'5:###REV###P53420  '`,
+not objects) and only lists proteins that made it into the summary's hit list,
+so it is often `''` and gives wrong target/decoy counts.
+
+`getProteinsWithThisPepMatch` and `pep.getProteins()` are partial or empty on .msr. `getAllProteinsWithThisPepMatch(...)` with vector out-arguments returns every accession (verified on Mascot 3.1, small searches); for whole-file scans the SQLite join is faster.
+
+```python
+vi = msparser.vectori
+start, end, frame, mult, db = vi(), vi(), vi(), vi(), vi()
+pre, post = msparser.VectorString(), msparser.VectorString()
+accs = list(results.getAllProteinsWithThisPepMatch(q, rank, start, end, pre, post,
+                                                   frame, mult, db))
+# only for a concatenated target+decoy FASTA searched with DECOY=0; for Mascot's
+# automatic decoy use MSRES_DECOY (below) or the FDR APIs (recipe 19)
+is_decoy = all(a.startswith("###REV###") for a in accs)
+```
+
+`start`/`end`/`pre`/`post`/`db` are filled in parallel with `accs`.
+
+### Looking up one protein
+
+Use `results.getProtein(accession, db_idx)`. In a single-hit summary
+(`setSingleHit(...)` / `MSPEPSUM_SINGLE_HIT_DBIDX`) `getHit(1)` is not always
+the requested protein, and `isPeptideUnique()` is true for every peptide
+(bold/red flags are not meaningful) because only that protein is loaded.
+
+### Error-tolerant and decoy-side matches
+
+- **Error-tolerant searches:** add `MSRES_INTEGRATED_ERR_TOL` (256) to `flags`,
+  otherwise every second-pass match is dropped and `pep.getIsFromErrorTolerant()`
+  is always False (one file went from 0 to 6,707 ET PSMs). The ET modification
+  sits in the `X` slot (index 33) of `getVarModsStr()`; get its name and delta
+  from `results.getErrTolModName(q, rank)` / `getErrTolModDelta(q, rank)`, not
+  `params.getVarModsName()`.
+- **Decoy side:** build a second summary with `MSRES_DECOY` (128) in `flags` to
+  read the automatic-decoy matches with the same API.
 
 ### HTTP Client & Authentication
 
@@ -508,6 +595,15 @@ for i in range(1, 1 + num_peaks):
     intensity = inp.getPeakIntensity(1, i)
 ```
 
+**Several PEPMASS lines in one MGF block** (DIA-style or top-down candidate
+precursors): Mascot makes one query per precursor but stores the peaks only on
+the **first** of them; the others share the title and have 0 peaks. Fall back
+to the first query with the same `getStringTitle(True)`.
+
+`ms_peptide.getDelta()` is observed minus calculated (`getMrExperimental() -
+getMrCalc()`), and so is the `dM` column of a Percolator `.pip`. Take masses
+from the peptide object: the `.pip` writes `mrCalc` to 6 significant figures.
+
 ### Search Type Detection
 
 ```python
@@ -524,6 +620,8 @@ msparser.ms_mascotresults.MSRES_GROUP_PROTEINS       # parsimony grouping
 msparser.ms_mascotresults.MSRES_SHOW_SUBSETS          # show subset proteins
 msparser.ms_mascotresults.MSRES_CLUSTER_PROTEINS      # hierarchical clustering
 msparser.ms_mascotresults.MSRES_MUDPIT_PROTEIN_SCORE  # MudPIT scoring
+msparser.ms_mascotresults.MSRES_INTEGRATED_ERR_TOL    # 256: include error-tolerant matches
+msparser.ms_mascotresults.MSRES_DECOY                 # 128: summarise the decoy side
 msparser.ms_peptidesummary.MSPEPSUM_USE_HOMOLOGY_THRESH  # homology threshold
 msparser.ms_peptidesummary.MSPEPSUM_PERCOLATOR        # Percolator rescoring
 msparser.ms_mascotresults.SCORE                       # sort by score
@@ -564,6 +662,9 @@ for u in range(1, 1 + results.getNumberOfUnassigned()):
 10. **Result files** are `.dat` (text) or `.msr` (binary) format; both opened the same way — **EXCEPT** the new Mascot 3.x SQLite-backed `.msr`: on **large DIA** results `ms_peptidesummary`/`ms_proteinsummary` can return 0 hits or hang, in which case read the SQLite tables directly ([SQLite-backed `.msr`](references/sqlite-msr.md)). **Do not mistake the more common "missing proteins" causes for a SQLite-format problem:** (a) family members hidden behind `getHit()` (see [Reading all proteins](#reading-all-proteins-family-members-not-just-gethit)); (b) Percolator/FDR-passing hits that live in cache `.pop` files, not the `.msr` at all (see [Importing Percolator results](#importing-percolator-results-not-in-the-msr)). Neither is fixed by switching to raw SQL.
 11. **FDR target is a decimal** - `setTargetFDR(0.01)` for 1%, not `setTargetFDR(1)`
 12. **Significance test** - `getIonsScore() >= getPeptideThreshold(q, 20, rank)` is equivalent to `getExpectationValue() <= 0.05`
+13. **0 hits after `get_ms_mascotresults_params`** - the defaults may include `MSPEPSUM_PERCOLATOR`; set Percolator up properly or clear the bit (see [Enable Percolator](#enable-percolator))
+14. **Accessions per PSM** - `getProteinsWithThisPepMatch` is a partial, string result; use `getAllProteinsWithThisPepMatch` with vector arguments; on .msr the SQLite join is faster for whole-file scans (see [Proteins for a peptide match](#proteins-for-a-peptide-match-targetdecoy-classification))
+15. **Error-tolerant results** need `MSRES_INTEGRATED_ERR_TOL` in `flags`, or the second-pass matches are silently absent
 
 ## Example Scripts
 

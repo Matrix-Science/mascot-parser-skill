@@ -8,7 +8,9 @@ Factory/base class for opening Mascot result files.
 
 ```python
 # Factory method - opens .dat or .msr files
-resfile = msparser.ms_mascotresfilebase.createResfile(filename, keepAliveInterval=0)
+resfile = msparser.ms_mascotresfilebase.createResfile(filename, keepAliveInterval=0,
+    keepAliveText, flags=RESFILE_NOFLAG, cacheDirectory="../data/cache/%Y/%m")
+# returns ms_mascotresfile_dat or ms_mascotresfile_msr; no plain ms_mascotresfile class
 ```
 
 **Validation & Errors:**
@@ -29,6 +31,9 @@ resfile = msparser.ms_mascotresfilebase.createResfile(filename, keepAliveInterva
 - `getDate()` -> int (Unix timestamp)
 - `getMascotVer()` -> str
 - `getFastaVer()` -> str
+- `getMSParserVersion()` -> str (msparser library version)
+- `getSearchParameter(key)` / `getSearchParametersKeyValues()` / `getHeaderKeyValues()` (`.msr`; `getSectionValueStr` is `.dat`-only)
+- `setPercolatorFeatures(mascotOptions, additionalFeatures, adapterParams: VectorString)` / `getPercolatorFileNames()` -> (pip, target.pop, decoy.pop); empty until features are set
 
 **Search Type Detection:**
 - `isPMF()` -> bool (peptide mass fingerprint)
@@ -223,7 +228,10 @@ results = msparser.ms_peptidesummary(
 **Peptide Access:**
 - `getPeptide(query, rank)` -> ms_peptide or None (both 1-based)
 - `getReadableVarMods(query, rank)` -> str (human-readable modification string)
-- `getProteinsWithThisPepMatch(query, rank)` -> str
+- `getProteinsWithThisPepMatch(query, rank)` -> str like `'5:ACC  '` — **partial**: only proteins in the summary; partial or empty on .msr
+- `getAllProteinsWithThisPepMatch(query, rank, start, end, pre, post, frame, multiplicity, db)` -> tuple of all accessions; the 7 out-args are `vectori`/`VectorString` (start, end: vectori; pre, post: VectorString; frame, multiplicity, db: vectori)
+- `getProtein(accession, dbIdx=1)` -> ms_protein — use for one known protein
+- `getErrTolModName(query, rank)` / `getErrTolModDelta(query, rank)` — error-tolerant mod (needs `MSRES_INTEGRATED_ERR_TOL`)
 
 **Significance & Thresholds:**
 - `getPeptideThreshold(query, sigLevel, rank)` -> float — effective significance threshold for this PSM
@@ -510,6 +518,8 @@ frames = msparser.vectori()
 - `MSRES_SHOW_SUBSETS` - show subset proteins
 - `MSRES_CLUSTER_PROTEINS` - hierarchical clustering
 - `MSRES_MUDPIT_PROTEIN_SCORE` - MudPIT scoring
+- `MSRES_DECOY` (128) - summarise the decoy matches instead of the targets
+- `MSRES_INTEGRATED_ERR_TOL` (256) - include error-tolerant (second-pass) matches; required for ET searches
 
 ### Peptide Summary Flags (ms_peptidesummary)
 - `MSPEPSUM_NONE` - no flags
