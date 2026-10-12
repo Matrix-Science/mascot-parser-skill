@@ -494,6 +494,8 @@ def get_significant_peptides(resfile, mascot_dat_path=None, target_fdr=0.01):
 ## 13. Enable Percolator Rescoring
 
 ```python
+import os
+
 def create_summary_with_percolator(resfile, mascot_dat_path=None, target_fdr=0.01):
     """Create a summary with Percolator rescoring enabled (if available)."""
     mascotOptions = msparser.ms_mascotoptions()

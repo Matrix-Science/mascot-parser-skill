@@ -88,8 +88,10 @@ maj, minr, prod, ver = con.execute(
 legacy flat `.dat`/`.msr` — use msparser normally.)
 
 **Distiller `.rov` projects searched on Mascot 3.x embed this same SQLite file**:
-the `.rov` is a ZIP, and stream `mdro_search_status+1` of each per-file cache
-(`<project>.files/*.rov`) is the `.msr`. Extract it to a temp file, then use
+the `.rov` is a ZIP, and stream `mdro_search_status+N` (N>=1) of each per-file cache
+(`<project>.files/*.rov`) is the `.msr`. It may be absent from Daemon cache
+`.rov` files; then fall back to `<resultsFile>` in the `mdro_search_status`
+manifest. Extract it to a temp file, then use
 `sqlite3` (e.g. `search__parameters`, `search__databases` for the executed
 search conditions) or `createResfile`. The `mdro_search_status` stream (no
 suffix) is a small XML manifest whose `<resultsFile>` gives the server-side path.
@@ -170,12 +172,9 @@ all (`ms_mascotresfilebase` has no SEC_ constants; they live on
 `ms_mascotresfile_dat`). Code ported from `.dat` workflows (e.g.
 fdr_stats.pl) will run without error and classify zero matches.
 
-**msparser-only fix:** `summary.getAllProteinsWithThisPepMatch(q, r, start, end,
-pre, post, frame, multiplicity, db)` with `vectori` / `VectorString`
-out-arguments returns **every** accession on an `.msr` (verified on a Mascot
-3.1 `.msr`, where target/decoy counts changed from 96:0 to 54:42 once it
-replaced `getProteinsWithThisPepMatch`). Code is in SKILL.md → *Proteins for a
-peptide match*.
+**Summary:** `getProteinsWithThisPepMatch` and `pep.getProteins()` are partial or empty on .msr. `getAllProteinsWithThisPepMatch(...)` with vector out-arguments returns every accession (verified on Mascot 3.1, small searches); for whole-file scans the SQLite join is faster. (On one small search, target/decoy counts went from
+96:0 to 54:42 once `getAllProteinsWithThisPepMatch` replaced
+`getProteinsWithThisPepMatch`.) Code is in SKILL.md → *Proteins for a peptide match*.
 
 **SQLite alternative** (fast for whole-file scans) — msparser for
 scores/expect/pretty-rank, SQLite for accessions, joined on

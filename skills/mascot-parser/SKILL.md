@@ -34,6 +34,8 @@ After downloading, extract the SDK. The bindings are organized by language:
 
 `msparser.py` and `_msparser.pyd` / `_msparser.so` must come from the same SDK download. On Linux, `_msparser.so` needs `libcurl.so.4`; slim Debian/Ubuntu images lack it (`apt-get install libcurl4`). Version check: `resfile.getMSParserVersion()` (there is no `msparser.ms_version`). Mascot Server, Distiller and ML adapters each bundle their own, possibly different, msparser build.
 
+Observed once: after `import msparser` in a Python process driving MDRO, CreatePeakLists/CreateSpectrum failed; cause unconfirmed. Keep msparser and MDRO in separate processes (see the `mascot-mdro` skill).
+
 ## Platform Paths
 
 Mascot Server runs on Windows or Linux. Paths differ by platform:
@@ -311,7 +313,8 @@ Setting the `MSPEPSUM_PERCOLATOR` flag **alone gives a summary with 0 hits**
 (no error). msparser must find the `.pip` / `.target.pop` / `.decoy.pop` files
 the server wrote, and their cache path is a hash of the Percolator features
 **and the ML adapter parameters**. Reproduce what `protein_view.pl` /
-`master_results_2.pl` do (verified on Mascot 3.1, MS2Rescore results):
+`master_results_2.pl` do (mirrors MascotResults.pm; a probe with these inputs
+located the server's `.pip`/`.pop` on Mascot 3.1, MS2Rescore results):
 
 ```python
 os.chdir("<MASCOT_HOME>/cgi")                       # cache dir is relative
@@ -326,6 +329,8 @@ opts.setPercolatorExeFlags(opts.getPercolatorRtFlags(rf.hasRT(), opts.isPercolat
 ml = dict(kv.split("=", 1) for kv in rf.params().getML_ADAPTER_PARAM() if "=" in kv)
 ml_vec = msparser.VectorString()
 for k in sorted(ml):
+    if ml[k] == "":          # skip keys with empty values, as protein_view.pl does
+        continue
     ml_vec.append(f"{k}={ml[k]}")
 rf.setPercolatorFeatures(opts, "", ml_vec)
 missing = [f for f in rf.getPercolatorFileNames()     # (pip, target.pop, decoy.pop)
@@ -339,7 +344,10 @@ results = msparser.ms_peptidesummary(rf, resParams)
 ```
 
 `getML_ADAPTER_PARAM()` returns a tuple of `key=value` strings (empty for a
-plain Percolator search). If the paths still don't match the server's files,
+plain Percolator search). The probe differed slightly: it ran with
+`setPercolatorUseRT(False)` and passed the cache dir in the 3rd
+(`keepAliveText`) slot, so the default `../data/cache/%Y/%m` is what matched;
+the 5th-argument form above follows the header. If the paths still don't match the server's files,
 the copy-into-a-temp-cache fallback is [Common Recipes](references/common-recipes.md)
 recipe 20; for FDR-passing PSMs only, read the `.target.pop` directly (below).
 
@@ -490,8 +498,7 @@ ions, and add the PSM's reporter sums to every protein in `proteinIds`.
 `summary.getPeptide(N, M)` (the pip's rank 1 was msparser rank 7, etc.). When
 joining pip/pop rows to msparser objects, scan the query's ranks and match on
 peptide string, then ions score, then mass; stop at the first
-`not pep.getAnyMatch()` (asking for a rank past the last match leaves an error
-on the results file).
+`not pep.getAnyMatch()`.
 
 ### Getting Peptides for a Protein
 
@@ -520,9 +527,9 @@ for i in range(1, 1 + prot.getNumPeptides()):
 
 `getProteinsWithThisPepMatch(q, rank)` returns a **string** (`'5:###REV###P53420  '`,
 not objects) and only lists proteins that made it into the summary's hit list,
-so it is often `''` and gives wrong target/decoy counts. For **every** accession
-use `getAllProteinsWithThisPepMatch`, which needs vector out-parameters
-(verified on a Mascot 3.1 `.msr`):
+so it is often `''` and gives wrong target/decoy counts.
+
+`getProteinsWithThisPepMatch` and `pep.getProteins()` are partial or empty on .msr. `getAllProteinsWithThisPepMatch(...)` with vector out-arguments returns every accession (verified on Mascot 3.1, small searches); for whole-file scans the SQLite join is faster.
 
 ```python
 vi = msparser.vectori
@@ -656,7 +663,7 @@ for u in range(1, 1 + results.getNumberOfUnassigned()):
 11. **FDR target is a decimal** - `setTargetFDR(0.01)` for 1%, not `setTargetFDR(1)`
 12. **Significance test** - `getIonsScore() >= getPeptideThreshold(q, 20, rank)` is equivalent to `getExpectationValue() <= 0.05`
 13. **0 hits after `get_ms_mascotresults_params`** - the defaults may include `MSPEPSUM_PERCOLATOR`; set Percolator up properly or clear the bit (see [Enable Percolator](#enable-percolator))
-14. **Accessions per PSM** - `getProteinsWithThisPepMatch` is a partial, string result; use `getAllProteinsWithThisPepMatch` with vector arguments (see [Proteins for a peptide match](#proteins-for-a-peptide-match-targetdecoy-classification))
+14. **Accessions per PSM** - `getProteinsWithThisPepMatch` is a partial, string result; use `getAllProteinsWithThisPepMatch` with vector arguments; on .msr the SQLite join is faster for whole-file scans (see [Proteins for a peptide match](#proteins-for-a-peptide-match-targetdecoy-classification))
 15. **Error-tolerant results** need `MSRES_INTEGRATED_ERR_TOL` in `flags`, or the second-pass matches are silently absent
 
 ## Example Scripts

@@ -228,7 +228,7 @@ results = msparser.ms_peptidesummary(
 **Peptide Access:**
 - `getPeptide(query, rank)` -> ms_peptide or None (both 1-based)
 - `getReadableVarMods(query, rank)` -> str (human-readable modification string)
-- `getProteinsWithThisPepMatch(query, rank)` -> str like `'5:ACC  '` — **partial**: only proteins in the summary
+- `getProteinsWithThisPepMatch(query, rank)` -> str like `'5:ACC  '` — **partial**: only proteins in the summary; partial or empty on .msr
 - `getAllProteinsWithThisPepMatch(query, rank, start, end, pre, post, frame, multiplicity, db)` -> tuple of all accessions; the 7 out-args are `vectori`/`VectorString` (start, end: vectori; pre, post: VectorString; frame, multiplicity, db: vectori)
 - `getProtein(accession, dbIdx=1)` -> ms_protein — use for one known protein
 - `getErrTolModName(query, rank)` / `getErrTolModDelta(query, rank)` — error-tolerant mod (needs `MSRES_INTEGRATED_ERR_TOL`)
