@@ -49,9 +49,12 @@ Meanwhile `resfile.isValid()`, `anyMSMS()`, `anyFastaMatches()`,
 `hasQuantitation()` all return **True** — so the empty result *looks like* a
 silent failure rather than an unsupported format. Direct SQL on the same file
 shows the data is fully there (e.g. 700+ PSMs for a single biomarker protein in
-one raw file). On a DIA result with Percolator/MS2Rescore FDR this overlaps with
-the older `MSPEPSUM_PERCOLATOR`-makes-`getHit()`-return-`None` bug (see the main
-skill's Percolator section) — clearing that flag doesn't fix the hang.
+one raw file). **Rule out the commoner cause first:** defaults from
+`get_ms_mascotresults_params` include `MSPEPSUM_PERCOLATOR` for a
+Percolator/MS2Rescore search, and without Percolator set up the summary has 0
+hits on any file size (SKILL.md → *Enable Percolator*). If clearing that flag
+gives hits promptly, it was never a SQLite problem; it doesn't fix a genuine
+large-DIA hang.
 
 **Practical rule:** for the new SQLite `.msr` on a large DIA result *where the
 summary API genuinely hangs or returns 0 hits*, **read the SQLite tables
@@ -83,6 +86,14 @@ maj, minr, prod, ver = con.execute(
 
 (If `sqlite3.connect` raises `DatabaseError: file is not a database`, you have a
 legacy flat `.dat`/`.msr` — use msparser normally.)
+
+**Distiller `.rov` projects searched on Mascot 3.x embed this same SQLite file**:
+the `.rov` is a ZIP, and stream `mdro_search_status+1` of each per-file cache
+(`<project>.files/*.rov`) is the `.msr`. Extract it to a temp file, then use
+`sqlite3` (e.g. `search__parameters`, `search__databases` for the executed
+search conditions) or `createResfile`. The `mdro_search_status` stream (no
+suffix) is a small XML manifest whose `<resultsFile>` gives the server-side path.
+See the `mascot-distiller` skill's ROV file-format reference.
 
 ## Table layout (schema_version 1.0)
 
@@ -147,11 +158,11 @@ Notes:
 - `varmods_string` is one digit per peptide residue position (plus N-/C-term slots); a digit `n` means variable mod `mod_num = n` (from `search__variable_mods`) is on that residue. All-zeros = unmodified.
 - The `quant_component_name` column links a PSM to a Mascot Distiller quant component, but the **integrated XIC areas themselves are not in the `.msr`** — they live in the Distiller `.rov` project's binary segment streams (see the `mascot-distiller` skill's `ROV_FILE_FORMAT.md`). For a quick label-free proxy you can trapezoidally integrate `query__summary.intensity` vs `query__data.rt_in_seconds` over the matched PSMs of a peptide form — symmetric across forms, so ratios are robust, but it underestimates the true Distiller XIC.
 
-## Per-PSM protein accessions: msparser methods return EMPTY on `.msr`
+## Per-PSM protein accessions: the partial-list methods return EMPTY on `.msr`
 
 Verified on Mascot 3.1.242 / msparser 3.x (2026-08): with a working
-`ms_peptidesummary` over an `.msr`, the accession routes that work on `.dat`
-**silently return nothing** for proteins outside the report hit list —
+`ms_peptidesummary` over an `.msr`, the accession routes ported from `.dat`
+code **silently return nothing** for proteins outside the report hit list —
 `summary.getProteinsWithThisPepMatch(q, r)` → empty string,
 `pep.getProteins()` → empty tuple, and section access
 (`getSectionValueStr(SEC_PEPTIDES, "qN_pM")`) does not exist for `.msr` at
@@ -159,13 +170,23 @@ all (`ms_mascotresfilebase` has no SEC_ constants; they live on
 `ms_mascotresfile_dat`). Code ported from `.dat` workflows (e.g.
 fdr_stats.pl) will run without error and classify zero matches.
 
-**The working hybrid pattern** — msparser for scores/expect/pretty-rank,
-SQLite for accessions, joined on `(query_id, rank_id)`:
+**msparser-only fix:** `summary.getAllProteinsWithThisPepMatch(q, r, start, end,
+pre, post, frame, multiplicity, db)` with `vectori` / `VectorString`
+out-arguments returns **every** accession on an `.msr` (verified on a Mascot
+3.1 `.msr`, where target/decoy counts changed from 96:0 to 54:42 once it
+replaced `getProteinsWithThisPepMatch`). Code is in SKILL.md → *Proteins for a
+peptide match*.
+
+**SQLite alternative** (fast for whole-file scans) — msparser for
+scores/expect/pretty-rank, SQLite for accessions, joined on
+`(query_id, rank_id)`:
 
 ```python
 resfile = msparser.ms_mascotresfilebase.createResfile(path)
-summary = msparser.ms_peptidesummary(resfile, flags, 0.05, 1, "", 0, 5, "",
-                                     msparser.ms_peptidesummary.MSPEPSUM_NONE)
+rp = msparser.ms_mascotresults_params()
+resfile.get_ms_mascotresults_params(msparser.ms_mascotoptions(), rp)
+rp.setFlags2(rp.getFlags2() & ~msparser.ms_peptidesummary.MSPEPSUM_PERCOLATOR)
+summary = msparser.ms_peptidesummary(resfile, rp)
 expect = summary.getPeptideExpectationValue(pep.getIonsScore(), q)
 
 acc = {}   # (query_id, rank_id) -> [accessions]
@@ -183,6 +204,7 @@ for q, r, a in sqlite3.connect(path).execute(
 
 - `resfile = ms_mascotresfilebase.createResfile(path)` — opens fine (`isValid()` True).
 - `resfile.params()` — full search parameters, including `getNumberOfDatabases()` + `getDB(i)` for the multi-DB list. Use this, not the `search__databases` table, if you want the msparser-typed view.
+- `resfile.getSearchParameter("KEY")` / `getSearchParametersKeyValues()` / `getHeaderKeyValues()` — any parameter without a typed getter (no `getSectionValueStr` on `.msr`).
 - `resfile.anyMSMS()` / `anyPMF()` / `isErrorTolerant()` / `hasQuantitation()` — all reliable.
 - `ms_inputquery(resfile, q)` — spectrum/peak access works (it can be slow to first-touch because of the legacy `.dat` materialisation).
 - `ms_peptidesummary` / `ms_proteinsummary` on a **small** search (a handful of files, modest query count) — fine. It's specifically the large-DIA case that breaks.

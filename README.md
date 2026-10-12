@@ -1,6 +1,6 @@
 # Mascot Parser Skill
 
-**Version:** 1.0.0 &nbsp;|&nbsp; **License:** Apache-2.0
+**Version:** 1.1.0 &nbsp;|&nbsp; **License:** Apache-2.0
 
 An Agent Skill that teaches AI coding assistants how to write scripts against the Mascot Server **msparser** SDK (Python, Perl, Java, C#).
 
@@ -10,6 +10,7 @@ The skill itself is just markdown — `skills/mascot-parser/SKILL.md` plus refer
 
 - msparser API surface across all four language bindings
 - Common recipes: reading `.dat` results, search submission, server config
+- Mascot 3.x SQLite `.msr` results, protein-family members, Percolator / ML-rescored results, error-tolerant and decoy matches
 - Safety rules (e.g. never submit writes against the public Matrix Science server)
 - Cross-language constructor / constant / import differences
 

@@ -91,6 +91,11 @@ def create_summary(resfile, mascot_dat_path=None, target_fdr=None):
 
     resParams = msparser.ms_mascotresults_params()
     resfile.get_ms_mascotresults_params(mascotOptions, resParams)
+    # Defaults can carry MSPEPSUM_PERCOLATOR -> 0 hits unless Percolator is set
+    # up (recipe 13 / SKILL.md "Enable Percolator"); plain Mascot scoring here.
+    resParams.setFlags2(resParams.getFlags2() & ~msparser.ms_peptidesummary.MSPEPSUM_PERCOLATOR)
+    if resfile.isErrorTolerant():
+        resParams.setFlags(resParams.getFlags() | msparser.ms_mascotresults.MSRES_INTEGRATED_ERR_TOL)
 
     if target_fdr is not None and resfile.params().getDECOY() > 0:
         resParams.setTargetFDR(target_fdr)
@@ -507,10 +512,15 @@ def create_summary_with_percolator(resfile, mascot_dat_path=None, target_fdr=0.0
         and not resfile.isErrorTolerant()
     )
 
-    if can_percolate:
-        flags2 = resParams.getFlags2()
+    # The flag alone gives 0 hits: the resfile must also be opened with
+    # RESFILE_USE_CACHE and setPercolatorFeatures(opts, "", ml_adapter_params)
+    # called so msparser finds the server's .pop files — see SKILL.md
+    # "Enable Percolator" for the full sequence. Here: only when they exist.
+    flags2 = resParams.getFlags2() & ~msparser.ms_peptidesummary.MSPEPSUM_PERCOLATOR
+    files = resfile.getPercolatorFileNames()   # () until setPercolatorFeatures is called
+    if can_percolate and files and all(os.path.exists(f) for f in files):
         flags2 |= msparser.ms_peptidesummary.MSPEPSUM_PERCOLATOR
-        resParams.setFlags2(flags2)
+    resParams.setFlags2(flags2)
 
     if target_fdr is not None and resfile.params().getDECOY() > 0:
         resParams.setTargetFDR(target_fdr)
@@ -617,8 +627,9 @@ resfile = msparser.ms_mascotresfilebase.createResfile(path)
 ```
 
 This is not documented in the SDK guide but is required by every script that
-opens local result files. The QC dashboard (`mascot_qc_report.py`) does this
-explicitly; copy that pattern.
+opens local result files. The default results-cache directory
+(`../data/cache/%Y/%m`) and relative `../data/...` result paths from the search
+log resolve from the same directory.
 
 ---
 
@@ -663,17 +674,22 @@ hits via the result file's embedded decoy flag.
 
 ---
 
-## 20. Read Percolator-rescored results: stage cache files in a tmp dir
+## 20. Read Percolator-rescored results: stage cache files in a tmp dir (fallback)
 
 Setting `MSPEPSUM_PERCOLATOR` on a result-params object alone is **not enough**
 — `ms_peptidesummary(resfile, params)` will create with `getNumberOfHits() = 0`
 and any `getPeptide()` call will raise
 "Attempting to call function ... before createSummary() has completed".
 
+**Try SKILL.md → *Enable Percolator* first:** opening with `RESFILE_USE_CACHE`
++ the cache directory and passing the search's ML adapter parameters to
+`setPercolatorFeatures` makes msparser compute the same path the server wrote,
+so nothing needs copying. Use the staging below only when the paths still
+differ (e.g. reading a copied result file away from the server).
+
 The hash msparser computes locally on `mascot.dat` may differ from the hash
 the server used when it wrote the `.target.pop` / `.decoy.pop` / `.pip` files
-in `<MASCOT_HOME>/data/cache/YYYY/MM/<server_hash>/`. The fix (mirrors what
-the QC dashboard does):
+in `<MASCOT_HOME>/data/cache/YYYY/MM/<server_hash>/`. The staging fix:
 
 1. Open the resfile pointed at a **fresh tmp dir** as cache_dir.
 2. Call `setPercolatorFeatures` with the same `ml_adapter_param` values that
@@ -728,8 +744,8 @@ def open_with_percolator(res_path, adapter_params):
 ```
 
 After this, `rf.getPercolatorFileNames()` returns a 3-tuple
-`(pip, target.pop, decoy.pop)` (note pip is FIRST, not last). The QC
-dashboard's `stage_percolator_cache` follows exactly this pattern.
+`(pip, target.pop, decoy.pop)` (note pip is FIRST, not last). In the
+`createResfile` call above, `tmp` is the 5th argument (`cacheDirectory`).
 
 ## 21. Read the `.target.pop` directly (FDR-passing PSMs, family-member-safe)
 
@@ -793,6 +809,4 @@ def proteins_from_target_pop(res_path, cache_root, target_fdr=0.01):
 
 For TMT/iTRAQ quant, read each passing PSM's spectrum with
 `ms_inputquery(resfile, query)`, sum the reporter-ion intensities (nearest peak
-within tolerance per channel), and add them to every protein in `proteinIds`. A
-complete working extractor is in the project at
-`TPP2D/scripts/msr_to_quant_summary_pop.py`.
+within tolerance per channel), and add them to every protein in `proteinIds`.
