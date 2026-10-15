@@ -749,6 +749,16 @@ After this, `rf.getPercolatorFileNames()` returns a 3-tuple
 `(pip, target.pop, decoy.pop)` (note pip is FIRST, not last). In the
 `createResfile` call above, `tmp` is the 5th argument (`cacheDirectory`).
 
+Two refinements from testing this on Parser 3.1.242 (SKILL.md → *Staging
+Percolator files in a sandbox*): the `os.chdir` to the server's `cgi` means the
+SDB results cache and schema lookups still go to the **server's** `data/cache`
+and `html/xmlns`, because Parser resolves those relative to the working folder
+whatever cache directory you pass - run from a sandbox `cgi/` with a copied
+`html/xmlns` when the server must stay untouched. And problems in the copied
+`.pop` files (error 7686, `ERR_PERCOLATOR_POP_BAD_LINE`) are reported on `rf`
+(`getNumberOfErrors()` / `getErrorNumber(i)` / `getErrorString(i)`), not on the
+summary, so check the resfile after creating the summary.
+
 ## 21. Read the `.target.pop` directly (FDR-passing PSMs, family-member-safe)
 
 When you only need the **FDR-passing PSMs** (and per-protein roll-ups built from

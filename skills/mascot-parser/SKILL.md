@@ -356,6 +356,60 @@ recipe 20; for FDR-passing PSMs only, read the `.target.pop` directly (below).
 $resParams->setFlags2($resParams->getFlags2() | $msparser::ms_peptidesummary::MSPEPSUM_PERCOLATOR);
 ```
 
+### Staging Percolator files in a sandbox (copied results, or testing a Parser build)
+
+When the result file is a copy away from the server, or you must not touch the
+server's cache (testing another Parser build, damaging a `.pop` on purpose),
+give the resfile its own cache and copy the server's three files to the paths
+**this** build expects. Parser resolves the unimod schema (`../html/xmlns/...`)
+and the SDB results cache (`../data/cache/%Y/%m`) relative to the working
+folder regardless of the cache directory you pass, so the sandbox needs a `cgi/`
+to run from and a copy of `html/xmlns` beside it (verified 3.1.242.18):
+
+```python
+import os, shutil, msparser
+MASCOT_HOME = "C:/inetpub/mascot"
+sandbox = os.path.abspath("C:/temp/perc_sandbox")
+os.makedirs(os.path.join(sandbox, "cgi"), exist_ok=True)
+if not os.path.isdir(os.path.join(sandbox, "html", "xmlns")):
+    shutil.copytree(os.path.join(MASCOT_HOME, "html", "xmlns"), os.path.join(sandbox, "html", "xmlns"))
+os.chdir(os.path.join(sandbox, "cgi"))             # relative cache/schema paths stay in the sandbox
+
+B = msparser.ms_mascotresfilebase
+datfile = msparser.ms_datfile(f"{MASCOT_HOME}/config/mascot.dat")   # keep in a variable (gotcha 16)
+opts = datfile.getMascotOptions()
+rf = B.createResfile(res_path, 0, "", 0, os.path.join(sandbox, "data", "cache"))
+opts.setPercolatorExeFlags(opts.getPercolatorRtFlags(rf.hasRT(), opts.isPercolatorUseRT()))
+ml = dict(kv.split("=", 1) for kv in rf.params().getML_ADAPTER_PARAM() if "=" in kv)
+vec = msparser.VectorString()
+for k in sorted(ml):
+    if ml[k] != "":
+        vec.append(f"{k}={ml[k]}")
+rf.setPercolatorFeatures(opts, "", vec)
+pip, target, decoy = rf.getPercolatorFileNames()   # (pip, target.pop, decoy.pop) - pip FIRST
+prefix = "C:/inetpub/mascot/data/cache/<yyyy>/<mm>/<hash>/F012345.dat.<hash>"   # server's files, read only
+for src, dst in ((prefix + ".pip", pip), (prefix + ".target.pop", target), (prefix + ".decoy.pop", decoy)):
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copyfile(src, dst)
+
+rp = msparser.ms_mascotresults_params()
+rf.get_ms_mascotresults_params(opts, rp)
+rp.setFlags2(rp.getFlags2() | msparser.ms_peptidesummary.MSPEPSUM_PERCOLATOR)
+summary = msparser.ms_peptidesummary(rf, rp)
+print("hits", summary.getNumberOfHits())
+# Problems reading the .pop files are reported on the RESULTS FILE object, not the summary:
+for i in range(1, rf.getNumberOfErrors() + 1):
+    print(rf.getErrorNumber(i), rf.getErrorString(i))
+```
+
+A malformed `.target.pop` line (fewer than 6 tab-separated columns, or a
+`PSMId` not of the form `query:%d;rank:%d`) gives error **7686**
+(`ERR_PERCOLATOR_POP_BAD_LINE`, "Percolator output (pop) file line N is
+invalid ...") on the resfile in Parser 3.1.242; the remaining lines still load.
+Older builds (3.1.100.12) printed "Error at line N of file
+...ms_peptidesummarybase.cpp" to stderr and reported no error at all, so a
+pre-3.1.242 build that looks clean may just be talking to stderr.
+
 ### Check if Percolator is enabled by default
 
 ```python
@@ -665,6 +719,10 @@ for u in range(1, 1 + results.getNumberOfUnassigned()):
 13. **0 hits after `get_ms_mascotresults_params`** - the defaults may include `MSPEPSUM_PERCOLATOR`; set Percolator up properly or clear the bit (see [Enable Percolator](#enable-percolator))
 14. **Accessions per PSM** - `getProteinsWithThisPepMatch` is a partial, string result; use `getAllProteinsWithThisPepMatch` with vector arguments; on .msr the SQLite join is faster for whole-file scans (see [Proteins for a peptide match](#proteins-for-a-peptide-match-targetdecoy-classification))
 15. **Error-tolerant results** need `MSRES_INTEGRATED_ERR_TOL` in `flags`, or the second-pass matches are silently absent
+16. **Never call methods on a temporary** - `msparser.ms_datfile(path).getMascotOptions()` or `msparser.ms_msr2dat28(msparser.ms_mascotresfile_msr(...))` keeps a C++ reference into an object Python has already freed: "Fatal Python error: Aborted", access violations, or silently empty options (the SDB cache never appeared because the options were blank). Keep the `ms_datfile` / resfile in a variable for as long as the object built from it lives.
+17. **The cache directory argument does not move the SDB results cache.** Parser writes `../data/cache/%Y/%m` (and reads `../html/xmlns/...`) relative to the **working folder**; from `C:/inetpub/mascot/cgi` that is the server's own cache. For anything experimental, run from a sandbox `cgi/` with a copy of `html/xmlns` next to it - see [Staging Percolator files in a sandbox](#staging-percolator-files-in-a-sandbox-copied-results-or-testing-a-parser-build).
+18. **Spectral-library results need SL flags** - report-style loading of a search with library matches needs `MSPEPSUM_SL_INTEGRATED` (library plus FASTA matches, `rf.anyFastaMatches()`) or `MSPEPSUM_SL_ONLY` in `flags2`, as `PeptideSummary/Util.pm` adds them; otherwise the summary has 0 hits. Crosslink searches likewise need `MSPEPSUM_CROSSLINK_INTEGRATED`.
+19. **Run risky calls in a subprocess and read the exit code** - a crash in the library takes the interpreter with it. Exit 3221225477 is `0xC0000005` (access violation); through a Bash pipe read `${PIPESTATUS[0]}`, not `$?`. Select the build with `PYTHONPATH` pointing at its `python36_and_later` folder; the version is in `_msparser.pyd` (regex `3\.\d+\.\d{3}\.\d+`) or from `resfile.getMSParserVersion()`.
 
 ## Example Scripts
 
